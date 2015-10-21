@@ -44,7 +44,9 @@ export default class AWSAPIGatewayDriver {
 	*
 	* @return {Promise}
 	*/
-	createService() {
+	createService(service) {
+		this.setServiceContext(service);
+
 		return Promise.resolve()
 		.then(() => {
 			// Create the root level resources for the service
@@ -55,9 +57,9 @@ export default class AWSAPIGatewayDriver {
 		.then(() => {
 			// Create the stage specific resources, using all of the configured stages
 			// by default.
-			return Promise.all(this.context.stages.all.map((stage) => {
-				return this.createStage(stage);
-			}));
+			return Promise.all(
+				this.context.stages.all.map((stage) => this.createStage(stage))
+			);
 		})
 		.catch((err) => {
 			console.error('aws-apigateway: Something went wrong. Cleaning up.');
@@ -66,11 +68,9 @@ export default class AWSAPIGatewayDriver {
 			// actually want to rollback all of the changes
 			return Promise.settle([
 				this.deleteBucket(),
-				this.callWithAllPermutations(this.deleteExecutionRolePolicy)
-					.then(() => {
-						return this.callWithAllPermutations(this.deleteExecutionRole)
-					}),
-				this.callWithAllPermutations(this.deleteKey)
+				Promise.all(
+					this.context.stages.all.map((stage) => this.deleteStage(stage))
+				)
 			])
 			.map(function(result) {
 				if(result.isRejected()) {
@@ -89,11 +89,8 @@ export default class AWSAPIGatewayDriver {
 	 */
 	createStage(stage) {
 		return Promise.resolve(this.permutations)
-		.filter((permutation) => {
-			return permutation.stage == stage;
-		})
+		.filter((permutation) => permutation.stage == stage )
 		.then((permutations) => {
-
 			console.log('aws-apigateway: Creating KMS encryption keys');
 
 			return this.callWithPermutations(permutations, this.createKey)
@@ -109,6 +106,29 @@ export default class AWSAPIGatewayDriver {
 					return this.callWithPermutations(permutations,
 						this.addPermissionsToExecutionRole);
 				});
+		});
+	}
+
+	/**
+	 * Delete the specified stage for the current service, removing all of the
+	 * resources associated with it.
+	 * @param  {string} stage
+	 */
+	deleteStage(stage) {
+		return Promise.resolve(this.permutations)
+		.filter((permutation) => permutation.stage == stage )
+		.then((permutations) => {
+			return Promise.settle([
+				// Delete the execution role policies, then the execution roles
+				// themselves
+				this.callWithPermutations(permutations, this.deleteExecutionRolePolicy)
+					.then(() => {
+						return this.callWithPermutations(permutations, this.deleteExecutionRole)
+					}),
+
+				// Remove the KMS keys that were used for encryption
+				this.callWithPermutations(permutations, this.deleteKey)
+			]);
 		});
 	}
 
