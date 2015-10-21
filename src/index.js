@@ -28,7 +28,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 
 		// Create all of the permutations
 		this.context.regions.forEach((region) => {
-			this.context.stages.all.forEach((stage) => {
+			this.context.stages.forEach((stage) => {
 				this.permutations.push({
 					region: region,
 					stage: stage
@@ -54,7 +54,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		return Promise.resolve()
 		.then(() => {
 			// Create the root level resources for the service
-			console.log('aws-apigateway: Creating S3 bucket');
+			console.log('aws-apigateway: Creating S3 bucket for ' + service.name);
 
 			return this.createBucket();
 		})
@@ -62,7 +62,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			// Create the stage specific resources, using all of the configured stages
 			// by default.
 			return Promise.all(
-				this.context.stages.all.map((stage) => this.createStage(stage))
+				this.context.stages.map((stage) => this.createStage(stage))
 			);
 		})
 		.catch((err) => {
@@ -81,12 +81,13 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Delete all of the resources for the current service
 	 */
 	deleteService() {
-		console.log('aws-apigateway: Deleting the S3 bucket');
+		console.log('aws-apigateway: Deleting the S3 bucket for ' +
+			this.context.name);
 
 		return Promise.settle([
 			this.deleteBucket(),
 			Promise.all(
-				this.context.stages.all.map((stage) => this.deleteStage(stage))
+				this.context.stages.map((stage) => this.deleteStage(stage))
 			)
 		])
 		.map(function(result) {
@@ -104,17 +105,17 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		return Promise.resolve(this.permutations)
 		.filter((permutation) => permutation.stage == stage )
 		.then((permutations) => {
-			console.log('aws-apigateway: Creating KMS encryption keys');
+			console.log('aws-apigateway: Creating KMS encryption keys for ' + stage);
 
 			return this.callWithPermutations(permutations, this.createKey)
 				.then(() => {
-					console.log('aws-apigateway: Creating Lambda IAM execution roles');
+					console.log('aws-apigateway: Creating Lambda IAM execution roles for ' + stage);
 
 					return this.callWithPermutations(permutations,
 						this.createExecutionRole);
 				})
 				.then(() => {
-					console.log('aws-apigateway: Creating IAM policies for the execution role');
+					console.log('aws-apigateway: Creating IAM policies for the execution role for ' + stage);
 
 					return this.callWithPermutations(permutations,
 						this.addPermissionsToExecutionRole);
@@ -131,15 +132,15 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		return Promise.resolve(this.permutations)
 		.filter((permutation) => permutation.stage == stage )
 		.then((permutations) => {
-			console.log('aws-apigateway: Deleting IAM policies for the execution role');
-			console.log('aws-apigateway: Deleting KMS encryption keys');
+			console.log('aws-apigateway: Deleting IAM policies for the execution role for ' + stage);
+			console.log('aws-apigateway: Deleting KMS encryption keys for ' + stage);
 
 			return Promise.settle([
 				// Delete the execution role policies, then the execution roles
 				// themselves
 				this.callWithPermutations(permutations, this.deleteExecutionRolePolicy)
 					.then(() => {
-						console.log('aws-apigateway: Deleting Lambda execution roles');
+						console.log('aws-apigateway: Deleting Lambda execution roles for ' + stage);
 
 						return this.callWithPermutations(permutations, this.deleteExecutionRole)
 					}),
