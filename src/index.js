@@ -66,20 +66,29 @@ export default class AWSAPIGatewayDriver {
 
 			// There was a problem creating one or more of the resources, so we
 			// actually want to rollback all of the changes
-			return Promise.settle([
-				this.deleteBucket(),
-				Promise.all(
-					this.context.stages.all.map((stage) => this.deleteStage(stage))
-				)
-			])
-			.map(function(result) {
-				if(result.isRejected()) {
-					console.log(result.reason().stack);
-				}
-			})
+			return this.deleteService()
 			.finally(function() {
 				throw err;
 			});
+		});
+	}
+
+	/**
+	 * Delete all of the resources for the current service
+	 */
+	deleteService() {
+		console.log('aws-apigateway: Deleting the S3 bucket');
+
+		return Promise.settle([
+			this.deleteBucket(),
+			Promise.all(
+				this.context.stages.all.map((stage) => this.deleteStage(stage))
+			)
+		])
+		.map(function(result) {
+			if(result.isRejected()) {
+				console.log(result.reason().stack);
+			}
 		});
 	}
 
@@ -95,7 +104,7 @@ export default class AWSAPIGatewayDriver {
 
 			return this.callWithPermutations(permutations, this.createKey)
 				.then(() => {
-					console.log('aws-apigateway: Creating Lambda IAM execution role');
+					console.log('aws-apigateway: Creating Lambda IAM execution roles');
 
 					return this.callWithPermutations(permutations,
 						this.createExecutionRole);
@@ -118,11 +127,16 @@ export default class AWSAPIGatewayDriver {
 		return Promise.resolve(this.permutations)
 		.filter((permutation) => permutation.stage == stage )
 		.then((permutations) => {
+			console.log('aws-apigateway: Deleting IAM policies for the execution role');
+			console.log('aws-apigateway: Deleting KMS encryption keys');
+
 			return Promise.settle([
 				// Delete the execution role policies, then the execution roles
 				// themselves
 				this.callWithPermutations(permutations, this.deleteExecutionRolePolicy)
 					.then(() => {
+						console.log('aws-apigateway: Deleting Lambda execution roles');
+
 						return this.callWithPermutations(permutations, this.deleteExecutionRole)
 					}),
 
