@@ -7,8 +7,12 @@ import {IAM, KMS, S3} from 'aws-sdk';
 import {Promise} from 'bluebird';
 import {dependencies} from 'needlepoint';
 
-export default class AWSAPIGatewayDriver {
+import BaseDriver from 'polymerase-driver-base';
+
+export default class AWSAPIGatewayDriver extends BaseDriver {
 	constructor() {
+		super();
+
 		// Permutations of stage-region combinations
 		this.permutations = [];
 
@@ -20,7 +24,7 @@ export default class AWSAPIGatewayDriver {
 	* @param {object} serviceContext
 	*/
 	setServiceContext(serviceContext) {
-		this.context = serviceContext;
+		super.setServiceContext(serviceContext);
 
 		// Create all of the permutations
 		this.context.regions.forEach((region) => {
