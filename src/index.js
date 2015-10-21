@@ -465,7 +465,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @return {string}
 	 */
 	getKeyAlias(stage, region) {
-		return 'alias/' + ['polymerase', this.context.id, stage, region, 'key']
+		return 'alias/' + ['polymerase', this.context.id, stage, region]
 			.join('-');
 	}
 
