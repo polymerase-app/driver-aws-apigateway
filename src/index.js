@@ -10,6 +10,13 @@ import {dependencies} from 'needlepoint';
 import BaseDriver from 'polymerase-driver-base';
 
 export default class AWSAPIGatewayDriver extends BaseDriver {
+	/**
+	 * Return an array of valid regions
+	 */
+	static getRegions() {
+		return ['us-east-1', 'us-west-2', 'eu-west-1', 'ap-northeast-1'];
+	}
+
 	constructor() {
 		super();
 
