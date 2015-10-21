@@ -3,7 +3,7 @@
 * @copyright 2015 Andrew Munsell <andrew@wizardapps.net>
 */
 
-import {IAM, Lambda, S3} from 'aws-sdk';
+import {IAM, KMS, S3} from 'aws-sdk';
 import {Promise} from 'bluebird';
 import {dependencies} from 'needlepoint';
 
@@ -13,8 +13,6 @@ export default class AWSAPIGatewayDriver {
 		this.permutations = [];
 
 		this.aws = {};
-
-		this.executionRole = null;
 	}
 
 	/**
@@ -35,6 +33,7 @@ export default class AWSAPIGatewayDriver {
 		});
 
 		this.aws.iam = new IAM({ region: 'us-east-1' });
+		this.aws.kms = new KMS({ region: 'us-east-1' });
 		this.aws.s3 = new S3({ region: 'us-east-1' });
 	}
 
@@ -60,9 +59,6 @@ export default class AWSAPIGatewayDriver {
 				return this.createStage(stage);
 			}));
 		})
-		.then(function() {
-			throw new Error('Dummyerr');
-		})
 		.catch((err) => {
 			console.error('aws-apigateway: Something went wrong. Cleaning up.');
 
@@ -73,7 +69,8 @@ export default class AWSAPIGatewayDriver {
 				this.callWithAllPermutations(this.deleteExecutionRolePolicy)
 					.then(() => {
 						return this.callWithAllPermutations(this.deleteExecutionRole)
-					})
+					}),
+				this.callWithAllPermutations(this.deleteKey)
 			])
 			.map(function(result) {
 				if(result.isRejected()) {
@@ -96,10 +93,16 @@ export default class AWSAPIGatewayDriver {
 			return permutation.stage == stage;
 		})
 		.then((permutations) => {
-			console.log('aws-apigateway: Creating Lambda IAM execution role');
 
-			return this.callWithPermutations(permutations,
-				this.createExecutionRole)
+			console.log('aws-apigateway: Creating KMS encryption keys');
+
+			return this.callWithPermutations(permutations, this.createKey)
+				.then(() => {
+					console.log('aws-apigateway: Creating Lambda IAM execution role');
+
+					return this.callWithPermutations(permutations,
+						this.createExecutionRole);
+				})
 				.then(() => {
 					console.log('aws-apigateway: Creating IAM policies for the execution role');
 
@@ -275,37 +278,65 @@ export default class AWSAPIGatewayDriver {
 	 * @param  {string} region
 	 */
 	createExecutionRolePolicy(stage, region) {
-		return new Promise((resolve, reject) => {
-			var policyDocument = JSON.stringify({
-				"Version": "2012-10-17",
-				"Statement": [
-					{
-						"Effect": "Allow",
-						"Action": [
-							"s3:GetObject"
-						],
-						"Resource": [
-							// Allow access to the stage configuration
-							"arn:aws:s3:::" + this.getBucketName() + "/config/" + stage + ".json",
+		return Promise.resolve()
+			.then(() => {
+				return new Promise((resolve, reject) => {
+					this.aws.kms.describeKey({
+						KeyId: this.getKeyAlias(stage, region)
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			})
+			.then((key) => {
+				return new Promise((resolve, reject) => {
+					var policyDocument = JSON.stringify({
+						"Version": "2012-10-17",
+						"Statement": [
+							{
+								"Effect": "Allow",
+								"Action": [
+									"s3:GetObject"
+								],
+								"Resource": [
+									// Allow access to the stage configuration
+									"arn:aws:s3:::" + this.getBucketName() + "/config/" + stage + ".json",
 
-							// Allow access to the region's configuration
-							"arn:aws:s3:::" + this.getBucketName() + "/config/" + stage + "/" + region + ".json"
+									// Allow access to the region's configuration
+									"arn:aws:s3:::" + this.getBucketName() + "/config/" + stage + "/" + region + ".json"
+								]
+							},
+
+							{
+								"Effect": "Allow",
+								"Action": [
+									"kms:Decrypt",
+									"kms:DescribeKey",
+									"kms:GetKeyPolicy"
+								],
+								"Resource": [
+									key.KeyMetadata.Arn
+								]
+							}
 						]
-					}
-				]
-			}, null, 4);
+					}, null, 4);
 
-			this.aws.iam.createPolicy({
-				PolicyName: this.getExecutionRolePolicyName(stage, region),
-				PolicyDocument: policyDocument
-			}, function(err, data) {
-				if(err) {
-					reject(err);
-				} else {
-					resolve(data);
-				}
+					this.aws.iam.createPolicy({
+						PolicyName: this.getExecutionRolePolicyName(stage, region),
+						PolicyDocument: policyDocument
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
 			});
-		});
 	}
 
 	/**
@@ -378,5 +409,91 @@ export default class AWSAPIGatewayDriver {
 				}
 			});
 		});
+	}
+
+	/**
+	 * Get the alias for the encryption key for the current service, state, and
+	 * region.
+	 * @param  {string} stage
+	 * @param  {string} region
+	 * @return {string}
+	 */
+	getKeyAlias(stage, region) {
+		return 'alias/' + ['polymerase', this.context.id, stage, region, 'key']
+			.join('-');
+	}
+
+	/**
+	 * Create a new master key for the current service, stage, and region.
+	 */
+	createKey(stage, region) {
+		return Promise.resolve()
+			.then(() => {
+				// Create the actual encryption key itself
+				return new Promise((resolve, reject) => {
+					this.aws.kms.createKey({
+						Description: 'Polymerase key ' + [this.context.id, stage, region]
+							.join(', '),
+						KeyUsage: 'ENCRYPT_DECRYPT'
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			})
+			.then((key) => {
+				// Create an alias to the encryption key
+				return new Promise((resolve, reject) => {
+					this.aws.kms.createAlias({
+						AliasName: this.getKeyAlias(stage, region),
+						TargetKeyId: key.KeyMetadata.Arn
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(key);
+						}
+					});
+				});
+			});
+	}
+
+	/**
+	 * Schedule the deletion of the key for the current service, stage, and region
+	 * @param  {string} stage
+	 * @param  {string} region
+	 */
+	deleteKey(stage, region) {
+		return Promise.resolve()
+			.then(() => {
+				return new Promise((resolve, reject) => {
+					this.aws.kms.describeKey({
+						KeyId: this.getKeyAlias(stage, region)
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			})
+			.then((key) => {
+				return new Promise((resolve, reject) => {
+					this.aws.kms.scheduleKeyDeletion({
+						KeyId: key.KeyMetadata.Arn,
+						PendingWindowInDays: 7
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			});
 	}
 }
