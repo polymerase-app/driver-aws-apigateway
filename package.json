@@ -1,0 +1,30 @@
+{
+  "name": "polymerase-driver-aws-apigateway",
+  "version": "1.0.0",
+  "description": "Driver for Polymerase to interface with AWS and Amazon API Gateway",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/polymerase-app/driver-aws-apigateway.git"
+  },
+  "keywords": [
+    "AWS",
+    "Lambda",
+    "API",
+    "Gateway"
+  ],
+  "author": "Andrew Munsell <andrew@wizardapps.net>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/polymerase-app/driver-aws-apigateway/issues"
+  },
+  "homepage": "https://github.com/polymerase-app/driver-aws-apigateway#readme",
+  "dependencies": {
+    "aws-sdk": "^2.2.10",
+    "bluebird": "^2.10.2",
+    "needlepoint": "^1.0.2"
+  }
+}
