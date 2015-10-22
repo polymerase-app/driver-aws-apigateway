@@ -114,7 +114,15 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		.then((permutations) => {
 			console.log('aws-apigateway: Creating KMS encryption keys for ' + stage);
 
-			return this.callWithPermutations(permutations, this.createKey)
+			// Copy the array of permutations so we can add the "all" region to the
+			// set of keys that need to be created.
+			var keyPermutations = permutations.slice(0);
+			keyPermutations.push({
+				stage: stage,
+				region: 'all'
+			});
+
+			return this.callWithPermutations(keyPermutations, this.createKey)
 				.then(() => {
 					console.log('aws-apigateway: Creating Lambda IAM execution roles for ' + stage);
 
@@ -139,6 +147,14 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		return Promise.resolve(this.permutations)
 		.filter((permutation) => permutation.stage == stage )
 		.then((permutations) => {
+			// Copy the array of permutations so we can add the "all" region to the
+			// set of keys that need to be deleted.
+			var keyPermutations = permutations.slice(0);
+			keyPermutations.push({
+				stage: stage,
+				region: 'all'
+			});
+
 			console.log('aws-apigateway: Deleting IAM policies for the execution role for ' + stage);
 			console.log('aws-apigateway: Deleting KMS encryption keys for ' + stage);
 
@@ -153,9 +169,64 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 					}),
 
 				// Remove the KMS keys that were used for encryption
-				this.callWithPermutations(permutations, this.deleteKey)
+				this.callWithPermutations(keyPermutations, this.deleteKey)
 			]);
 		});
+	}
+
+	/**
+	 * Get all of the configuration data for the current service and stage, and
+	 * optionally the specified region.
+	 * @param {string} stage
+	 * @param {string} region
+	 */
+	getConfig(stage, region) {
+
+	}
+
+	/**
+	 * Set the configuration for the current service and stage, and optionally
+	 * the specified region.
+	 * @param {object} configuration
+	 * @param {string} stage
+	 * @param {string} region
+	 */
+	setConfig(configuration, stage, region) {
+
+	}
+
+	/**
+	 * Get an item from the configuration hash for the current service and stage,
+	 * and optionally the specified region.
+	 * @param  {string} key
+	 * @param  {string} stage
+	 * @param  {string} region
+	 */
+	getConfigItem(key, stage, region) {
+
+	}
+
+	/**
+	 * Set an item in the configuration hash for the current service and stage,
+	 * and optionally the specified region.
+	 * @param  {string} key
+	 * @param  {string} value
+	 * @param  {string} stage
+	 * @param  {string} region
+	 */
+	setConfigItem(key, value, stage, region) {
+
+	}
+
+	/**
+	 * Unset an item in the configuration hash for the current service and stage,
+	 * and optionally the specified region.
+	 * @param  {string} key
+	 * @param  {string} stage
+	 * @param  {string} region
+	 */
+	unsetConfigItem(key, stage, region) {
+
 	}
 
 	/**
@@ -326,19 +397,33 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	createExecutionRolePolicy(stage, region) {
 		return Promise.resolve()
 			.then(() => {
-				return new Promise((resolve, reject) => {
-					this.aws.kms.describeKey({
-						KeyId: this.getKeyAlias(stage, region)
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					});
-				});
+				return Promise.all([
+					new Promise((resolve, reject) => {
+						this.aws.kms.describeKey({
+							KeyId: this.getKeyAlias(stage, region)
+						}, function(err, data) {
+							if(err) {
+								reject(err);
+							} else {
+								resolve(data);
+							}
+						});
+					}),
+
+					new Promise((resolve, reject) => {
+						this.aws.kms.describeKey({
+							KeyId: this.getKeyAlias(stage, 'all')
+						}, function(err, data) {
+							if(err) {
+								reject(err);
+							} else {
+								resolve(data);
+							}
+						});
+					})
+				])
 			})
-			.then((key) => {
+			.spread((key, stageKey) => {
 				return new Promise((resolve, reject) => {
 					var policyDocument = JSON.stringify({
 						"Version": "2012-10-17",
@@ -365,7 +450,8 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 									"kms:GetKeyPolicy"
 								],
 								"Resource": [
-									key.KeyMetadata.Arn
+									key.KeyMetadata.Arn,
+									stageKey.KeyMetadata.Arn
 								]
 							}
 						]
