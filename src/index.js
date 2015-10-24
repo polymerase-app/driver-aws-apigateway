@@ -14,7 +14,7 @@ import {dependencies} from 'needlepoint';
 import BaseDriver from 'polymerase-driver-base';
 
 // Constant used for the "all" region
-var ALL_REGIONS = 'all';
+const ALL_REGIONS = 'all';
 
 export default class AWSAPIGatewayDriver extends BaseDriver {
 	/**
