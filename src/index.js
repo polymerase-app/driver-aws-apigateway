@@ -3,11 +3,18 @@
 * @copyright 2015 Andrew Munsell <andrew@wizardapps.net>
 */
 
+import {createCipher} from 'crypto';
+
 import {IAM, KMS, S3} from 'aws-sdk';
-import {Promise} from 'bluebird';
+import Promise from 'bluebird';
+import {AES, HmacSHA256, enc as Encoding} from 'crypto-js';
+import extend from 'extend';
 import {dependencies} from 'needlepoint';
 
 import BaseDriver from 'polymerase-driver-base';
+
+// Constant used for the "all" region
+var ALL_REGIONS = 'all';
 
 export default class AWSAPIGatewayDriver extends BaseDriver {
 	/**
@@ -119,7 +126,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			var keyPermutations = permutations.slice(0);
 			keyPermutations.push({
 				stage: stage,
-				region: 'all'
+				region: ALL_REGIONS
 			});
 
 			return this.callWithPermutations(keyPermutations, this.createKey)
@@ -152,7 +159,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			var keyPermutations = permutations.slice(0);
 			keyPermutations.push({
 				stage: stage,
-				region: 'all'
+				region: ALL_REGIONS
 			});
 
 			console.log('aws-apigateway: Deleting IAM policies for the execution role for ' + stage);
@@ -175,13 +182,168 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
+	 * Decrypt the specified KMS-encrypted data, returning the response
+	 * @param  {string|Buffer} data
+	 */
+	decryptData(data) {
+		return new Promise((resolve, reject) => {
+			this.aws.kms.decrypt({
+				CiphertextBlob: data
+			}, function(err, data) {
+				if(err) {
+					reject(err);
+				} else {
+					resolve(data);
+				}
+			})
+		});
+	}
+
+	/**
+	 * Decrypt data locally using the specified key
+	 * @param  {string} data
+	 * @param  {string} key
+	 */
+	decryptDataLocally(data, hmac, key) {
+		var strKey = (typeof key == 'string') ? key : key.toString('base64');
+
+		// Decrypt the data with the specified key using AES 256
+		var decrypted = AES.decrypt(data, strKey);
+		var decryptedStr = decrypted.toString(Encoding.Utf8);
+
+		// Verify the HMAC
+		var verifyHmac = HmacSHA256(decryptedStr, strKey).toString(Encoding.Hex);
+
+		if(hmac != verifyHmac) {
+			throw new Error('aws-apigateway: HMAC validation failed');
+		}
+
+		strKey = null;
+
+		return decryptedStr;
+	}
+
+	/**
+	 * Encrypt the data locally using the specified key and return the AES
+	 * encrypted ciphertext as well as the HMAC of the data for verification
+	 * purposes.
+	 * @param  {string} data
+	 * @param  {string} key
+	 * @return {object}
+	 */
+	encryptDataLocally(data, key) {
+		var strKey = (typeof key == 'string') ? key : key.toString('base64');
+
+		var encrypted = AES.encrypt(data, strKey).toString();
+		var hmac = HmacSHA256(data, strKey).toString(Encoding.Hex);
+
+		data = null;
+		strKey = null;
+
+		return {
+			data: encrypted,
+			hmac: hmac
+		};
+	}
+
+	/**
+	 * Get the object key for the configuration file of the specified stage and
+	 * region.
+	 * @param  {string} stage
+	 * @param  {string} region
+	 */
+	getConfigObjectKey(stage, region) {
+		if(typeof region == 'undefined') {
+			return 'config/' + stage + '.json';
+		} else {
+			return 'config/' + stage + '/' + region + '.json';
+		}
+	}
+
+	/**
+	 * Get the raw configuration objects from S3, including the version
+	 * information. For a higher level method that just retrieve the actual
+	 * config and decrypts it, see "getConfig" or "getConfigItem"
+	 * @param  {string} stage
+	 * @param  {string} region
+	 */
+	getConfigObjects(stage, region, single) {
+		if(single === true) {
+			var bucketName = this.getBucketName();
+
+			return Promise.resolve()
+			.then(() => {
+				// Get the encrypted configuration, its HMAC, and the encrypted
+				// data key from S3
+				return new Promise((resolve, reject) => {
+					this.aws.s3.getObject({
+						Bucket: bucketName,
+						Key: this.getConfigObjectKey(stage, region)
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					})
+				});
+			})
+			.then((obj) => {
+				// Parse the S3 object
+				obj.Body = JSON.parse(obj.Body.toString('utf8'));
+
+				return obj;
+			})
+			.then((config) => {
+				// Decrypt the data encryption key
+				return this.decryptData(new Buffer(config.Body.key, 'base64'))
+					.then((key) => {
+						key = key.Plaintext;
+
+						// Using the decrypted data encryption key, decrypt the actual
+						// configuration object and verify its HMAC
+						var decryptedConfig = this.decryptDataLocally(config.Body.data,
+							config.Body.hmac, key);
+
+						// Parse the decrypted content
+						config.Body.data = JSON.parse(decryptedConfig);
+
+						return config;
+					});
+			})
+			.catch((err) => {
+				if(err.code && err.code == 'NoSuchKey') {
+					return {
+						VersionId: null,
+						Body: {
+							key: null,
+							hmac: null,
+							data: {}
+						}
+					};
+				} else {
+					throw err;
+				}
+			});
+		} else {
+			return Promise.all([
+				this.getConfigObjects(stage, ALL_REGIONS, true),
+				this.getConfigObjects(stage, region, true)
+			]);
+		}
+	}
+
+	/**
 	 * Get all of the configuration data for the current service and stage, and
 	 * optionally the specified region.
 	 * @param {string} stage
 	 * @param {string} region
 	 */
 	getConfig(stage, region) {
-
+		return this.getConfigObjects(stage, region)
+			.spread((stageConfig, regionConfig) => {
+				return extend(true, stageConfig.Body.data, regionConfig.Body.data);
+			});
 	}
 
 	/**
@@ -192,41 +354,71 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @param {string} region
 	 */
 	setConfig(configuration, stage, region) {
+		// Create a copy of the object to ensure that we do not encrypt the original
+		// object that was passed into this function
+		var configCopy = extend(true, {}, configuration);
 
-	}
+		return Promise.resolve()
+			.then(() => {
+				// See if we already have a data encryption key, and if not, have KMS
+				// generate a new one. If we do have a data encryption key, we need to
+				// request it be decrypted so that we can encrypt the actual data itself
+				if(configCopy.Body.key == null) {
+					return Promise.resolve()
+						.then(() => {
+							return new Promise((resolve, reject) => {
+								this.aws.kms.generateDataKey({
+									KeyId: this.getKeyAlias(stage, region),
+									KeySpec: 'AES_256'
+								}, function(err, data) {
+									if(err) {
+										reject(err);
+									} else {
+										resolve(data);
+									}
+								});
+							});
+						})
+						.then((key) => {
+							configCopy.Body.key = key.CiphertextBlob.toString('base64');
 
-	/**
-	 * Get an item from the configuration hash for the current service and stage,
-	 * and optionally the specified region.
-	 * @param  {string} key
-	 * @param  {string} stage
-	 * @param  {string} region
-	 */
-	getConfigItem(key, stage, region) {
+							return key.Plaintext.toString('base64');
+						});
+				} else {
+					return this.decryptData(new Buffer(configCopy.Body.key, 'base64'))
+						.then((key) => {
+							return key.Plaintext;
+						});
+				}
+			})
+			.then((dataKey) => {
+				// Now we have a decrypted data key, so we can use it to encrypt the
+				// data itself.
+				if(typeof configCopy.Body.data != 'string') {
+					configCopy.Body.data = JSON.stringify(configCopy.Body.data);
+				}
 
-	}
+				var encryptedParts = this.encryptDataLocally(configCopy.Body.data,
+					dataKey);
 
-	/**
-	 * Set an item in the configuration hash for the current service and stage,
-	 * and optionally the specified region.
-	 * @param  {string} key
-	 * @param  {string} value
-	 * @param  {string} stage
-	 * @param  {string} region
-	 */
-	setConfigItem(key, value, stage, region) {
-
-	}
-
-	/**
-	 * Unset an item in the configuration hash for the current service and stage,
-	 * and optionally the specified region.
-	 * @param  {string} key
-	 * @param  {string} stage
-	 * @param  {string} region
-	 */
-	unsetConfigItem(key, stage, region) {
-
+				configCopy.Body.data = encryptedParts.data;
+				configCopy.Body.hmac = encryptedParts.hmac;
+			})
+			.then(() => {
+				return new Promise((resolve, reject) => {
+					this.aws.s3.putObject({
+						Bucket: this.getBucketName(),
+						Key: this.getConfigObjectKey(stage, region),
+						Body: JSON.stringify(configCopy.Body, null, 4)
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			});
 	}
 
 	/**
@@ -261,17 +453,36 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Create the S3 bucket for the current service
 	 */
 	createBucket() {
-		return new Promise((resolve, reject) => {
-			this.aws.s3.createBucket({
-				Bucket: this.getBucketName()
-			}, function(err, data) {
-				if(err) {
-					reject(err);
-				} else {
-					resolve(data);
-				}
+		return Promise.resolve()
+			.then(() => {
+				return new Promise((resolve, reject) => {
+					this.aws.s3.createBucket({
+						Bucket: this.getBucketName()
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					})
+				});
 			})
-		});
+			.then(() => {
+				return new Promise((resolve, reject) => {
+					this.aws.s3.putBucketVersioning({
+						Bucket: this.getBucketName(),
+						VersioningConfiguration: {
+							Status: 'Enabled'
+						}
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					})
+				});
+			});
 	}
 
 	/**
@@ -412,7 +623,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 
 					new Promise((resolve, reject) => {
 						this.aws.kms.describeKey({
-							KeyId: this.getKeyAlias(stage, 'all')
+							KeyId: this.getKeyAlias(stage, ALL_REGIONS)
 						}, function(err, data) {
 							if(err) {
 								reject(err);
@@ -435,10 +646,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 								],
 								"Resource": [
 									// Allow access to the stage configuration
-									"arn:aws:s3:::" + this.getBucketName() + "/config/" + stage + ".json",
+									"arn:aws:s3:::" + this.getConfigObjectKey(stage),
 
 									// Allow access to the region's configuration
-									"arn:aws:s3:::" + this.getBucketName() + "/config/" + stage + "/" + region + ".json"
+									"arn:aws:s3:::" + this.getConfigObjectKey(stage, region)
 								]
 							},
 
@@ -551,6 +762,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @return {string}
 	 */
 	getKeyAlias(stage, region) {
+		if(!region) {
+			region = ALL_REGIONS;
+		}
+
 		return 'alias/' + ['polymerase', this.context.id, stage, region]
 			.join('-');
 	}
