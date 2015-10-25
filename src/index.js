@@ -646,10 +646,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 								],
 								"Resource": [
 									// Allow access to the stage configuration
-									"arn:aws:s3:::" + this.getConfigObjectKey(stage),
+									"arn:aws:s3:::" + this.getBucketName() + "/" + this.getConfigObjectKey(stage),
 
 									// Allow access to the region's configuration
-									"arn:aws:s3:::" + this.getConfigObjectKey(stage, region)
+									"arn:aws:s3:::" + this.getBucketName() + "/" + this.getConfigObjectKey(stage, region)
 								]
 							},
 
