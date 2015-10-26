@@ -807,6 +807,9 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @param  {string} region
 	 */
 	deleteKey(stage, region) {
+		console.log('aws-apigateway: Deleting the KMS key for the ' + stage
+			+ ' stage and ' + region + ' region.');
+
 		return Promise.resolve()
 			.then(() => {
 				return new Promise((resolve, reject) => {
@@ -820,6 +823,25 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 						}
 					});
 				});
+			})
+			.then((key) => {
+				return Promise.resolve()
+					.then(() => {
+						return new Promise((resolve, reject) => {
+							this.aws.kms.deleteAlias({
+								AliasName: this.getKeyAlias(stage, region)
+							}, function(err, data) {
+								if(err) {
+									reject(err);
+								} else {
+									resolve(data);
+								}
+							});
+						});
+					})
+					.then(() => {
+						return key;
+					});
 			})
 			.then((key) => {
 				return new Promise((resolve, reject) => {
