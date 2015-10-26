@@ -4,9 +4,12 @@
 */
 
 import {createCipher} from 'crypto';
+import {readFileSync} from 'fs';
+import {join} from 'path';
 
-import {IAM, KMS, S3} from 'aws-sdk';
+import {CloudFormation, IAM, KMS, S3} from 'aws-sdk';
 import Promise from 'bluebird';
+import {pascalCase} from 'change-case';
 import {AES, HmacSHA256, enc as Encoding} from 'crypto-js';
 import extend from 'extend';
 import {dependencies} from 'needlepoint';
@@ -31,6 +34,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		this.permutations = [];
 
 		this.aws = {};
+
+		// Promises representing ongoing "wait for stack" calls. Used to allow for
+		// re-using a single wait loop instead of performing multiple API calls.
+		this._stackWait = {};
 	}
 
 	/**
@@ -50,9 +57,119 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			});
 		});
 
+		this.aws.cloudFormation = new CloudFormation({ region: 'us-east-1' });
 		this.aws.iam = new IAM({ region: 'us-east-1' });
 		this.aws.kms = new KMS({ region: 'us-east-1' });
 		this.aws.s3 = new S3({ region: 'us-east-1' });
+	}
+
+	/**
+	 * Get the name of the CloudFormation stack used for the service's resources
+	 * @return {string}
+	 */
+	getServiceStackName() {
+		return ['polymerase', this.context.name, this.context.id].join('-');
+	}
+
+	/**
+	 * Get an output for the service stack with the following key
+	 * @param  {string} key
+	 */
+	getServiceStackOutput(key) {
+		return this.waitForStackReady(this.getServiceStackName())
+			.then((stack) => {
+				var output = stack.Outputs
+					.filter((output) => output.OutputKey == key);
+
+				if(output.length < 1) {
+					throw new Error('The specified output does not exist.');
+				} else {
+					return output[0].OutputValue;
+				}
+			});
+	}
+
+	/**
+	 * Get the template for the specified stack name or ID
+	 * @param  {string} id
+	 */
+	getStackTemplate(id) {
+		return new Promise((resolve, reject) => {
+			this.aws.cloudFormation.getTemplate({
+				StackName: id
+			}, function(err, data) {
+				if(err) {
+					reject(err);
+				} else {
+					resolve(JSON.parse(data.TemplateBody));
+				}
+			});
+		});
+	}
+
+	/**
+	 * Update the stack template for the given CloudFormation stack
+	 * @param  {string} id
+	 * @param  {object} template
+	 */
+	updateStackTemplate(id, template) {
+		return new Promise((resolve, reject) => {
+			this.aws.cloudFormation.updateStack({
+				StackName: id,
+				TemplateBody: JSON.stringify(template, null, 4)
+			}, function(err, data) {
+				if(err) {
+					reject(err);
+				} else {
+					resolve(data);
+				}
+			});
+		});
+	}
+
+	/**
+	 * Wait for the stack with the specified ID to be ready
+	 * @param  {String} id
+	 */
+	waitForStackReady(id, noReuse) {
+		if(this._stackWait.hasOwnProperty(id) && noReuse !== true) {
+			return this._stackWait[id];
+		}
+
+		var promise = new Promise((resolve, reject) => {
+			console.log('aws-apigateway: Waiting for CloudFormation...');
+
+			this.aws.cloudFormation.describeStacks({
+				StackName: id
+			}, (err, data) => {
+				if(err) {
+					delete this._stackWait[id];
+
+					reject(err);
+				} else {
+					var stack = data.Stacks[0];
+
+					switch(stack.StackStatus) {
+						case 'CREATE_COMPLETE':
+						case 'UPDATE_COMPLETE':
+						case 'ROLLBACK_COMPLETE':
+						case 'UPDATE_ROLLBACK_COMPLETE':
+							console.log('aws-apigateway: CloudFormation stack ready');
+							delete this._stackWait[id];
+
+							return resolve(stack);
+					}
+
+					setTimeout(() => {
+						resolve(this.waitForStackReady(id, true));
+					}, 7500);
+				}
+			});
+		});
+
+		this._stackWait[id] = promise;
+
+		return promise;
 	}
 
 	/**
@@ -68,19 +185,88 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		return Promise.resolve()
 		.then(() => {
 			// Create the root level resources for the service
-			console.log('aws-apigateway: Creating S3 bucket for ' + service.name);
+			console.log('aws-apigateway: Creating service-level resources');
 
-			return this.createBucket();
+			var rootResourceTemplate = readFileSync(join(__dirname, '..',
+				'cloud-formation', 'resources.json'), 'utf8');
+
+			return new Promise((resolve, reject) => {
+				this.aws.cloudFormation.createStack({
+					StackName: this.getServiceStackName(),
+					Capabilities: [
+						'CAPABILITY_IAM'
+					],
+					OnFailure: 'DELETE',
+					TemplateBody: rootResourceTemplate
+				}, function(err, data) {
+					if(err) {
+						reject(err);
+					} else {
+						resolve(data);
+					}
+				});
+			});
 		})
-		.then(() => {
-			// Create the stage specific resources, using all of the configured stages
-			// by default.
+		.then((stack) => {
+			// Wait for the stack to finish being created
+			return Promise.all([
+				this.waitForStackReady(this.getServiceStackName()),
+				this.getServiceStackOutput('BucketName')
+			]);
+		})
+		.spread((stack, bucketName) => {
+			// Now, upload the stage/region CloudFormation templates to the S3 bucket
+			// to be used to create the stages/regions.
+			var stageRegionResourcesTemplate = readFileSync(join(__dirname, '..',
+				'cloud-formation', 'stage-region-resources.json'));
+
+			return Promise.all([
+				stack,
+
+				bucketName,
+
+				new Promise((resolve, reject) => {
+					this.aws.cloudFormation.getTemplate({
+						StackName: stack.StackName
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				}),
+
+				new Promise((resolve, reject) => {
+					this.aws.s3.putObject({
+						Bucket: bucketName,
+						Key: 'templates/stage-region-resources.json',
+						Body: stageRegionResourcesTemplate
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				})
+			]);
+		})
+		.spread((stack, bucketName, stackTemplate, resourceTemplate) => {
+			stackTemplate = JSON.parse(stackTemplate.TemplateBody);
+
 			return Promise.all(
 				this.context.stages.map((stage) => this.createStage(stage))
 			);
 		})
+		.then((stack) => {
+			// Wait for the stack to finish being updated with the new stage
+			// sub-stacks
+			return this.waitForStackReady(stack.StackId);
+		})
 		.catch((err) => {
 			console.error('aws-apigateway: Something went wrong. Cleaning up.');
+			console.log(err.stack);
 
 			// There was a problem creating one or more of the resources, so we
 			// actually want to rollback all of the changes
@@ -95,90 +281,212 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Delete all of the resources for the current service
 	 */
 	deleteService() {
-		console.log('aws-apigateway: Deleting the S3 bucket for ' +
+		console.log('aws-apigateway: Emptying the S3 bucket for ' +
 			this.context.name);
 
-		return Promise.settle([
-			this.deleteBucket(),
-			Promise.all(
-				this.context.stages.map((stage) => this.deleteStage(stage))
-			)
-		])
-		.map(function(result) {
-			if(result.isRejected()) {
-				console.log(result.reason().stack);
-			}
-		});
+		return Promise.all(this.context.stages.map((stage) => this.deleteStage(stage)))
+			.then(() => {
+				return this.emptyServiceBucket();
+			})
+			.then(() => {
+				return this.waitForStackReady(this.getServiceStackName());
+			})
+			.then(() => {
+				console.log('aws-apigateway: Deleting all CloudFormation stacks');
+
+				return new Promise((resolve, reject) => {
+					this.aws.cloudFormation.deleteStack({
+						StackName: this.getServiceStackName()
+					}, function(err, data) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			})
+			.then(() => {
+				return this.waitForStackReady(this.getServiceStackName())
+					.catch((err) => {
+						// We want to ignore the error since it's just CloudFormation just
+						// responding saying that the stack doesn't exist anymore.
+					});
+			});
 	}
 
 	/**
-	 * Create the specified stage in all of the regions
-	 * @param  {string} stage
+	 * Create a stage for the current service
+	 * @param  {string} stage Name of the stage to create
+	 * @return {Promise}
 	 */
 	createStage(stage) {
-		return Promise.resolve(this.permutations)
-		.filter((permutation) => permutation.stage == stage )
-		.then((permutations) => {
-			console.log('aws-apigateway: Creating KMS encryption keys for ' + stage);
+		return this.waitForStackReady(this.getServiceStackName())
+			.then((stack) => {
+				// We know the stack is ready to be modified, so now we can go ahead
+				// and get the current stack template to prepare it to be modified
+				return Promise.all([
+					stack,
+					this.getStackTemplate(stack.StackName),
+					this.getServiceStackOutput('BucketName'),
+					this.createKey(stage, ALL_REGIONS)
+				]);
+			})
+			.spread((stack, stackTemplate, bucketName, stageKey) => {
+				// Modify the template to add the new resources (i.e. the sub stack
+				// definitions)
+				return Promise.resolve(this.context.regions)
+					.map((region) => {
+						return this.createKey(stage, region)
+							.then((regionKey) => {
+								return {
+									region: region,
+									key: regionKey
+								};
+							});
+					})
+					.map((region) => {
+						var resourceKey = pascalCase([this.context.id, stage, region.region,
+							'resources'].join('-')).replace(/_/g, '');
 
-			// Copy the array of permutations so we can add the "all" region to the
-			// set of keys that need to be created.
-			var keyPermutations = permutations.slice(0);
-			keyPermutations.push({
-				stage: stage,
-				region: ALL_REGIONS
+							stackTemplate.Resources[resourceKey] = {
+								Type: 'AWS::CloudFormation::Stack',
+								Properties: {
+									TemplateURL: 'https://s3.amazonaws.com/' + bucketName
+										+ '/templates/stage-region-resources.json',
+
+									Parameters: {
+										PolymeraseBucket: bucketName,
+										PolymeraseStage: stage,
+										PolymeraseRegion: region.region,
+										PolymeraseKMSStageKey: stageKey.KeyMetadata.Arn,
+										PolymeraseKMSRegionKey: region.key.KeyMetadata.Arn,
+									}
+								}
+							};
+					})
+					.then(() => {
+						return Promise.all([
+							stack,
+							stackTemplate
+						]);
+					});
+			})
+			.spread((stack, stackTemplate) => {
+				// Update the stack template
+				return this.updateStackTemplate(stack.StackId, stackTemplate);
+			})
+			.then((stack) => {
+				return this.waitForStackReady(stack.StackId);
 			});
-
-			return this.callWithPermutations(keyPermutations, this.createKey)
-				.then(() => {
-					console.log('aws-apigateway: Creating Lambda IAM execution roles for ' + stage);
-
-					return this.callWithPermutations(permutations,
-						this.createExecutionRole);
-				})
-				.then(() => {
-					console.log('aws-apigateway: Creating IAM policies for the execution role for ' + stage);
-
-					return this.callWithPermutations(permutations,
-						this.addPermissionsToExecutionRole);
-				});
-		});
 	}
 
 	/**
-	 * Delete the specified stage for the current service, removing all of the
-	 * resources associated with it.
+	 * Delete the specified stage from the current service
 	 * @param  {string} stage
 	 */
 	deleteStage(stage) {
-		return Promise.resolve(this.permutations)
-		.filter((permutation) => permutation.stage == stage )
-		.then((permutations) => {
-			// Copy the array of permutations so we can add the "all" region to the
-			// set of keys that need to be deleted.
-			var keyPermutations = permutations.slice(0);
-			keyPermutations.push({
-				stage: stage,
-				region: ALL_REGIONS
-			});
+		return this.waitForStackReady(this.getServiceStackName())
+			.then((stack) => {
+				// We know the stack is ready to be modified, so now we can go ahead
+				// and get the current stack template to prepare it to be modified
+				return Promise.all([
+					stack,
+					this.getStackTemplate(stack.StackName),
+					this.getServiceStackOutput('BucketName'),
+					this.deleteKey(stage, ALL_REGIONS)
+				]);
+			})
+			.spread((stack, stackTemplate, bucketName, stageKey) => {
+				console.log(JSON.stringify(stackTemplate));
+				// Modify the template to remove the resources (i.e. the sub stack
+				// definitions)
+				return Promise.resolve(this.context.regions)
+					.map((region) => {
+						return this.deleteKey(stage, region)
+							.then(() => {
+								return region;
+							});
+					})
+					.map((region) => {
+						var resourceKey = pascalCase([this.context.id, stage, region,
+							'resources'].join('-')).replace(/_/g, '');
 
-			console.log('aws-apigateway: Deleting IAM policies for the execution role for ' + stage);
-			console.log('aws-apigateway: Deleting KMS encryption keys for ' + stage);
-
-			return Promise.settle([
-				// Delete the execution role policies, then the execution roles
-				// themselves
-				this.callWithPermutations(permutations, this.deleteExecutionRolePolicy)
+						delete stackTemplate.Resources[resourceKey];
+					})
 					.then(() => {
-						console.log('aws-apigateway: Deleting Lambda execution roles for ' + stage);
+						return Promise.all([
+							stack,
+							stackTemplate
+						]);
+					});
+			})
+			.spread((stack, stackTemplate) => {
+				console.log(JSON.stringify(stackTemplate));
+				// Update the stack template
+				return this.updateStackTemplate(stack.StackId, stackTemplate);
+			})
+			.then((stack) => {
+				return this.waitForStackReady(stack.StackId);
+			});
+	}
 
-						return this.callWithPermutations(permutations, this.deleteExecutionRole)
-					}),
+	/**
+	 * Empty the bucket for the current service
+	 */
+	emptyServiceBucket() {
+		var listAndDelete = function(bucketName) {
+			return new Promise((resolve, reject) => {
+				this.aws.s3.listObjects({
+					Bucket: bucketName,
+					MaxKeys: 1000
+				}, (err, data) => {
+					if(err) {
+						reject(err);
+					} else {
+						// Delete the specified keys
+						var promise = new Promise((resolve, reject) => {
+							console.log('aws-apigateway: Deleting ' + data.Contents.length
+							 	+ ' items');
 
-				// Remove the KMS keys that were used for encryption
-				this.callWithPermutations(keyPermutations, this.deleteKey)
-			]);
-		});
+							this.aws.s3.deleteObjects({
+								Bucket: bucketName,
+								Delete: {
+									Objects: data.Contents.map((obj) => {
+										return {
+											Key: obj.Key
+										};
+									}),
+
+									Quiet: true
+								}
+							}, function(err, deleteData) {
+								if(err) {
+									reject(err);
+								} else {
+									resolve(deleteData);
+								}
+							})
+						});
+
+						if(data.NextMarker) {
+							promise = promise.then(() => {
+								return this.emptyServiceBucket(bucketName);
+							});
+						}
+
+						resolve(promise);
+					}
+				});
+			});
+		};
+
+		return this.getServiceStackOutput('BucketName')
+			.then((bucketName) => {
+				console.log('aws-apigateway: Emptying the service\'s bucket.');
+
+				return listAndDelete.call(this, bucketName);
+			})
 	}
 
 	/**
@@ -269,10 +577,8 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 */
 	getConfigObjects(stage, region, single) {
 		if(single === true) {
-			var bucketName = this.getBucketName();
-
-			return Promise.resolve()
-			.then(() => {
+			return this.getServiceStackOutput('BucketName')
+			.then((bucketName) => {
 				// Get the encrypted configuration, its HMAC, and the encrypted
 				// data key from S3
 				return new Promise((resolve, reject) => {
@@ -403,11 +709,13 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 
 				configCopy.Body.data = encryptedParts.data;
 				configCopy.Body.hmac = encryptedParts.hmac;
+
+				return this.getServiceStackOutput('BucketName');
 			})
-			.then(() => {
+			.then((bucketName) => {
 				return new Promise((resolve, reject) => {
 					this.aws.s3.putObject({
-						Bucket: this.getBucketName(),
+						Bucket: bucketName,
 						Key: this.getConfigObjectKey(stage, region),
 						Body: JSON.stringify(configCopy.Body, null, 4)
 					}, function(err, data) {
@@ -439,319 +747,6 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 */
 	callWithAllPermutations(func) {
 		return this.callWithPermutations(this.permutations, func);
-	}
-
-	/**
-	 * Get the name of the bucket for the current service
-	 * @return {string}
-	 */
-	getBucketName() {
-		return ['polymerase', this.context.id].join('-');
-	}
-
-	/**
-	 * Create the S3 bucket for the current service
-	 */
-	createBucket() {
-		return Promise.resolve()
-			.then(() => {
-				return new Promise((resolve, reject) => {
-					this.aws.s3.createBucket({
-						Bucket: this.getBucketName()
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					})
-				});
-			})
-			.then(() => {
-				return new Promise((resolve, reject) => {
-					this.aws.s3.putBucketVersioning({
-						Bucket: this.getBucketName(),
-						VersioningConfiguration: {
-							Status: 'Enabled'
-						}
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					})
-				});
-			});
-	}
-
-	/**
-	 * Delete the S3 bucket for the current service
-	 */
-	deleteBucket() {
-		return new Promise((resolve, reject) => {
-			this.aws.s3.deleteBucket({
-				Bucket: this.getBucketName()
-			}, function(err, data) {
-				if(err) {
-					reject(err);
-				} else {
-					resolve(data);
-				}
-			})
-		});
-	}
-
-	/**
-	 * Get the name of the execution role on AWS from the specified stage and
-	 * region.
-	 *
-	 * @return {string}
-	 */
-	getExecutionRoleName(stage, region) {
-		return ['polymerase', this.context.id, region, stage, 'lambda', 'exec']
-			.join('-');
-	}
-
-	/**
-	 * Create the execution role
-	 * @return {Promise}
-	 */
-	createExecutionRole(stage, region) {
-		// Create a new execution role that will be used by the Lambda
-		// functions when executing. This is the role we will add permissions
-		// for to decrypt data and access other AWS resources
-		return new Promise((resolve, reject) => {
-			this.aws.iam.createRole({
-				AssumeRolePolicyDocument: JSON.stringify({
-					"Version": "2012-10-17",
-					"Statement": [
-						{
-							"Effect": "Allow",
-							"Principal": {
-								"Service": ["lambda.amazonaws.com"]
-							},
-							"Action": ["sts:AssumeRole"]
-						}
-					]
-				}, null, 4),
-				RoleName: this.getExecutionRoleName(stage, region)
-			}, function(err, data) {
-				if(err) {
-					reject(err);
-				} else {
-					resolve(data);
-				}
-			});
-		});
-	}
-
-	/**
-	 * Delete the execution role for the current service
-	 * @return {Promise}
-	 */
-	deleteExecutionRole(stage, region) {
-		return new Promise((resolve, reject) => {
-			this.aws.iam.deleteRole({
-				RoleName: this.getExecutionRoleName(stage, region)
-			}, function(err, data) {
-				if(err) {
-					reject(err);
-				} else {
-					resolve(data);
-				}
-			});
-		});
-	}
-
-	/**
-	 * Add the required IAM permissions to the execution role for the current
-	 * service, stage, and region
-	 * @param {string} stage
-	 * @param {string} region
-	 */
-	addPermissionsToExecutionRole(stage, region) {
-		return this.createExecutionRolePolicy(stage, region)
-			.then((policy) => {
-				return new Promise((resolve, reject) => {
-					this.aws.iam.attachRolePolicy({
-						PolicyArn: policy.Policy.Arn,
-						RoleName: this.getExecutionRoleName(stage, region)
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					});
-				});
-			});
-	}
-
-	/**
-	 * Get the execution role policy name for the current service, stage, and
-	 * region.
-	 * @param  {string} stage
-	 * @param  {string} region
-	 */
-	getExecutionRolePolicyName(stage, region) {
-		return ['polymerase', this.context.id, stage, region, 'lambda', 'exec']
-			.join('-');
-	}
-
-	/**
-	 * Create the execution role policy that will be attached to the Lambda
-	 * execution role.
-	 * @param  {string} stage
-	 * @param  {string} region
-	 */
-	createExecutionRolePolicy(stage, region) {
-		return Promise.resolve()
-			.then(() => {
-				return Promise.all([
-					new Promise((resolve, reject) => {
-						this.aws.kms.describeKey({
-							KeyId: this.getKeyAlias(stage, region)
-						}, function(err, data) {
-							if(err) {
-								reject(err);
-							} else {
-								resolve(data);
-							}
-						});
-					}),
-
-					new Promise((resolve, reject) => {
-						this.aws.kms.describeKey({
-							KeyId: this.getKeyAlias(stage, ALL_REGIONS)
-						}, function(err, data) {
-							if(err) {
-								reject(err);
-							} else {
-								resolve(data);
-							}
-						});
-					})
-				])
-			})
-			.spread((key, stageKey) => {
-				return new Promise((resolve, reject) => {
-					var policyDocument = JSON.stringify({
-						"Version": "2012-10-17",
-						"Statement": [
-							{
-								"Effect": "Allow",
-								"Action": [
-									"s3:GetObject"
-								],
-								"Resource": [
-									// Allow access to the stage configuration
-									"arn:aws:s3:::" + this.getBucketName() + "/" + this.getConfigObjectKey(stage),
-
-									// Allow access to the region's configuration
-									"arn:aws:s3:::" + this.getBucketName() + "/" + this.getConfigObjectKey(stage, region)
-								]
-							},
-
-							{
-								"Effect": "Allow",
-								"Action": [
-									"kms:Decrypt",
-									"kms:DescribeKey",
-									"kms:GetKeyPolicy"
-								],
-								"Resource": [
-									key.KeyMetadata.Arn,
-									stageKey.KeyMetadata.Arn
-								]
-							}
-						]
-					}, null, 4);
-
-					this.aws.iam.createPolicy({
-						PolicyName: this.getExecutionRolePolicyName(stage, region),
-						PolicyDocument: policyDocument
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					});
-				});
-			});
-	}
-
-	/**
-	 * Delete the execution role policy that should be attached to the Lambda
-	 * execution role.
-	 * @param  {string} stage
-	 * @param  {string} region
-	 */
-	deleteExecutionRolePolicy(stage, region) {
-		return this._findPolicy(this.getExecutionRolePolicyName(stage, region))
-			.then((policy) => {
-				return new Promise((resolve, reject) => {
-					this.aws.iam.detachRolePolicy({
-						PolicyArn: policy.Arn,
-						RoleName: this.getExecutionRoleName(stage, region)
-					}, function(err, data) {
-						resolve(policy);
-					});
-				});
-			})
-			.then((policy) => {
-				return new Promise((resolve, reject) => {
-					this.aws.iam.deletePolicy({
-						PolicyArn: policy.Arn
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					});
-				});
-			});
-	}
-
-	/**
-	 * Find the policy with the specified name. Used as a helper to find the ARN
-	 * of the policy.
-	 * @param  {string} policyName
-	 */
-	_findPolicy(policyName, marker) {
-		return new Promise((resolve, reject) => {
-			var params = {
-				Scope: 'Local',
-				MaxItems: 100
-			};
-
-			if(marker) {
-				params.Marker = marker;
-			}
-
-			this.aws.iam.listPolicies(params, (err, data) => {
-				if(err) {
-					reject(err);
-				} else {
-					var matchedPolicy = data.Policies
-						.filter(function(policy) {
-							return policy.PolicyName == policyName;
-						});
-
-					if(matchedPolicy.length > 0) {
-						resolve(matchedPolicy[0]);
-					} else if (data.IsTruncated) {
-						this._findPolicy(policyName, Marker)
-							.then(resolve)
-							.catch(reject);
-					} else {
-						reject(new Error('The policy ' + policyName + ' was not found'));
-					}
-				}
-			});
-		});
 	}
 
 	/**

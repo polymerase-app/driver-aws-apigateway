@@ -1,0 +1,172 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+	"Parameters": {
+		"PolymeraseBucket": {
+			"Type": "String",
+			"Description": "Name of the bucket used to store resources for this Polymerase service"
+		},
+
+		"PolymeraseStage": {
+			"Type": "String",
+			"Description": "Name of the current stage."
+		},
+		"PolymeraseRegion": {
+			"Type": "String",
+			"Description": "Name of the current region."
+		},
+
+		"PolymeraseKMSStageKey": {
+			"Type": "String",
+			"Description": "ARN for the KMS master key used to encrypt stage level configuration data."
+		},
+		"PolymeraseKMSRegionKey": {
+			"Type": "String",
+			"Description": "ARN for the KMS master key used to encrypt region level configuration data."
+		}
+	},
+  "Resources": {
+    "PolymeraseExecutionPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "polymerase-execution-role-policy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject"
+              ],
+							"Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:s3:::",
+                      {
+                        "Ref": "PolymeraseBucket"
+                      },
+                      "/config",
+                      "/",
+											{ "Ref": "PolymeraseStage" },
+											".json"
+                    ]
+                  ]
+                },
+
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:s3:::",
+                      { "Ref": "PolymeraseBucket" },
+                      "/config",
+                      "/",
+											{ "Ref": "PolymeraseStage" },
+                      "/",
+											{ "Ref": "PolymeraseRegion" },
+											".json"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:GetKeyPolicy"
+              ],
+              "Resource": [
+								{ "Ref": "PolymeraseKMSStageKey" },
+								{ "Ref": "PolymeraseKMSRegionKey" }
+							]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Ref": "PolymeraseExecutionRole"
+          }
+        ]
+      }
+    },
+    "PolymeraseExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        }
+      }
+    },
+		"PolymeraseAPIPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "PolymeraseAPIPolicy",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "lambda:InvokeFunction"
+              ],
+              "Resource": [
+                "*"
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "iam:PassRole"
+              ],
+              "Resource": [
+                { "Fn::GetAtt": ["PolymeraseExecutionRole", "Arn"] }
+              ]
+            }
+          ]
+        },
+        "Roles": [
+          {
+            "Ref": "PolymeraseAPIRole"
+          }
+        ]
+      }
+    },
+    "PolymeraseAPIRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "apigateway.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

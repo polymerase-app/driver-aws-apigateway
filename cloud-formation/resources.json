@@ -1,0 +1,20 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Resources": {
+    "PolymeraseBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {}
+    }
+  },
+	"Outputs": {
+		"BucketName": {
+			"Description": "Name of the S3 bucket used to store the Polymerase service resources.",
+			"Value": { "Ref": "PolymeraseBucket" }
+		},
+
+		"BucketURL": {
+			"Description": "URL of the bucket.",
+			"Value": { "Fn::GetAtt": ["PolymeraseBucket", "WebsiteURL"] }
+		}
+	}
+}
