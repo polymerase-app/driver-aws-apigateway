@@ -398,7 +398,6 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				]);
 			})
 			.spread((stack, stackTemplate, bucketName, stageKey) => {
-				console.log(JSON.stringify(stackTemplate));
 				// Modify the template to remove the resources (i.e. the sub stack
 				// definitions)
 				return Promise.resolve(this.context.regions)
@@ -422,7 +421,6 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 					});
 			})
 			.spread((stack, stackTemplate) => {
-				console.log(JSON.stringify(stackTemplate));
 				// Update the stack template
 				return this.updateStackTemplate(stack.StackId, stackTemplate);
 			})
