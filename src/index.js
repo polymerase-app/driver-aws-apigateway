@@ -4,7 +4,7 @@
 */
 
 import {createCipher} from 'crypto';
-import {readFileSync} from 'fs';
+import {readFileSync, statSync, writeFileSync} from 'fs';
 import {join} from 'path';
 
 import {CloudFormation, IAM, KMS, S3} from 'aws-sdk';
@@ -281,11 +281,13 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Delete all of the resources for the current service
 	 */
 	deleteService() {
-		console.log('aws-apigateway: Emptying the S3 bucket for ' +
-			this.context.name);
+        console.log('aws-apigateway: Deleting all the stages for the service.');
 
 		return Promise.all(this.context.stages.map((stage) => this.deleteStage(stage)))
 			.then(() => {
+                console.log('aws-apigateway: Emptying the S3 bucket for ' +
+        			this.context.name);
+
 				return this.emptyServiceBucket();
 			})
 			.then(() => {
@@ -314,6 +316,93 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 					});
 			});
 	}
+
+    /**
+     * Initialize the service using the specified configuration and at the
+     * specified path
+     * @param  {object} config
+     * @param  {string} path
+     */
+    initializeService(config, path) {
+        var markerPath = join(path, '.polymerase-init');
+
+        try {
+            var markerStat = statSync(markerPath);
+
+            // If the stat call succeeded, then the initialization marker
+            // already exists, so we can simply exit.
+            return;
+        } catch(e) {}
+
+        // Install the .gitignore file if one does not exist yet
+        var gitIgnorePath = join(path, '.gitignore');
+
+        try {
+            var gitIgnoreStat = statSync(gitIgnorePath);
+        } catch(e) {
+            var gitIgnoreTemplate = readFileSync(join(__dirname, '..',
+                'templates', '_gitignore'));
+
+            writeFileSync(gitIgnorePath, gitIgnoreTemplate, {
+                encoding: 'utf8',
+                flag: 'w'
+            });
+        }
+
+        var packageJsonPath = join(path, 'package.json');
+        try {
+            var packageJsonStat = statSync(packageJsonPath);
+        } catch(e) {
+            // The package.json file likely doesn't exist, so we can try and
+            // create it now.
+            writeFileSync(packageJsonPath, JSON.stringify({
+                name: config.name,
+                version: config.version,
+
+                private: true,
+
+                main: 'src/polymerase.js',
+
+                dependencies: {
+                    'polymerase-lib': '^1.0.0',
+
+                    'app-module-path': '1.0.4'
+                }
+            }, null, 4), {
+                encoding: 'utf8',
+                flag: 'w'
+            });
+        }
+
+        // Run NPM install
+        console.log('aws-apigateway: Installing required NPM modules');
+
+        return Promise.resolve()
+            .then(() => {
+                return new Promise((resolve, reject) => {
+                    var npmInstallCmd = spawn('npm install', [], {
+                        cwd: path
+                    });
+
+                    // Wait for the command to complete
+                    npmInstallCmd.on('close', function(code) {
+                        if(code) {
+                            reject(code);
+                        } else {
+                            resolve();
+                        }
+                    });
+                });
+            })
+            .then(() => {
+                // Add the marker to indicate the service was initialized on
+                // this particular machine
+                writeFileSync(join(path, '.polymerase-init'), '', {
+                    encoding: 'utf8',
+                    flag: 'w'
+                });
+            });
+    }
 
 	/**
 	 * Create a stage for the current service

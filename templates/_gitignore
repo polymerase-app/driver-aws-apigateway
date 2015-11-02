@@ -1,0 +1,7 @@
+# Ignore the initialization marker
+.polymerase-init
+
+# Ignore NodeJS specific files and folders
+node_modules/
+
+npm-debug.log
