@@ -3,6 +3,7 @@
 * @copyright 2015 Andrew Munsell <andrew@wizardapps.net>
 */
 
+import {spawn} from 'child_process';
 import {createCipher} from 'crypto';
 import {readFileSync, statSync, writeFileSync} from 'fs';
 import {join} from 'path';
@@ -12,6 +13,7 @@ import Promise from 'bluebird';
 import {pascalCase} from 'change-case';
 import {AES, HmacSHA256, enc as Encoding} from 'crypto-js';
 import extend from 'extend';
+import {sync as mkpath} from 'mkpath';
 import {dependencies} from 'needlepoint';
 
 import BaseDriver from 'polymerase-driver-base';
@@ -333,6 +335,13 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
             // already exists, so we can simply exit.
             return;
         } catch(e) {}
+
+        // Ensure the subfolders are initialized and have been created
+        mkpath(join(path, 'src/routes'));
+        mkpath(join(path, 'src/lib'));
+
+        mkpath(join(path, 'test/routes'));
+        mkpath(join(path, 'test/lib'));
 
         // Install the .gitignore file if one does not exist yet
         var gitIgnorePath = join(path, '.gitignore');
