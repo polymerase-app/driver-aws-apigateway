@@ -1,0 +1,14 @@
+{
+  "id": null,
+
+  "paths": [],
+
+  "parameters": {
+    "aws-apigateway": {
+      "resources": {
+        "memory": 128,
+        "timeout": 1
+      }
+    }
+  }
+}

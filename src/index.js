@@ -6,7 +6,7 @@
 import {spawn} from 'child_process';
 import {createCipher} from 'crypto';
 import {readFileSync, statSync, writeFileSync} from 'fs';
-import {join} from 'path';
+import {join, sep as pathSeparator} from 'path';
 
 import {CloudFormation, IAM, KMS, S3} from 'aws-sdk';
 import Promise from 'bluebird';
@@ -15,6 +15,7 @@ import {AES, HmacSHA256, enc as Encoding} from 'crypto-js';
 import extend from 'extend';
 import {sync as mkpath} from 'mkpath';
 import {dependencies} from 'needlepoint';
+import {v4 as uuid} from 'node-uuid';
 
 import BaseDriver from 'polymerase-driver-base';
 
@@ -521,6 +522,74 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			.then((stack) => {
 				return this.waitForStackReady(stack.StackId);
 			});
+	}
+
+	/**
+	 * Initialize a route in the specified local folder, using the specified route path and options.
+	 * The initial skeleton for the route will be placed in the folder. Remote resources will
+	 * not be created at this point-- they will only be created once the route is deployed to a
+	 * stage.
+	 * @param folder
+	 * @param path
+	 * @param options
+	 */
+	initializeRoute(folder, path, options) {
+		// Get the path to the route folder
+		var routePath = join(folder, 'src', 'routes', this.getRouteFolderForPath(path));
+		mkpath(routePath);
+
+		// We can create the folder for the method
+		var methodPath = join(routePath, '__' + options.method.toLowerCase());
+		mkpath(methodPath);
+
+		// Ensure that the configuration file doesn't already exist so we do not overwrite it
+		try {
+			statSync(join(methodPath, 'polymerase.json'));
+
+			return false;
+		} catch(e) {}
+
+		// Finally, populate it with the default JSON options for the method
+		var polymeraseRouteJsonTemplate = JSON.parse(readFileSync(join(__dirname, '..', 'templates',
+				'routes', 'polymerase-route.json')));
+
+		polymeraseRouteJsonTemplate.id = uuid();
+		polymeraseRouteJsonTemplate.paths.push(path);
+
+		// Assign the resource limits if they were specified
+		if(options.resources) {
+			if(options.resources.memory) {
+				polymeraseRouteJsonTemplate.parameters['aws-apigateway'].resources.memory =
+						options.resources.memory;
+			}
+
+			if(options.resources.timeout) {
+				polymeraseRouteJsonTemplate.parameters['aws-apigateway'].resources.timeout =
+						options.resources.timeout;
+			}
+		}
+
+		// Now, write the configuration to the new route folder
+		writeFileSync(join(methodPath, 'polymerase.json'),
+				JSON.stringify(polymeraseRouteJsonTemplate, null, 4), {
+					encoding: 'utf8',
+					flag: 'w'
+				}
+		);
+
+		return true;
+	}
+
+	/**
+	 * Get the folder name for the specified API path
+	 * @param path
+	 */
+	getRouteFolderForPath(path) {
+		path = path.replace(/^\//, '');
+		path = path.replace(/\{([a-z\d\-\_]+)\}/ig, '_$1_');
+		path = path.split('/');
+
+		return join.call(join, ...path);
 	}
 
 	/**
