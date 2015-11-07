@@ -1,29 +1,29 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-	"Parameters": {
-		"PolymeraseBucket": {
-			"Type": "String",
-			"Description": "Name of the bucket used to store resources for this Polymerase service"
-		},
+  "Parameters": {
+    "PolymeraseBucket": {
+      "Type": "String",
+      "Description": "Name of the bucket used to store resources for this Polymerase service"
+    },
 
-		"PolymeraseStage": {
-			"Type": "String",
-			"Description": "Name of the current stage."
-		},
-		"PolymeraseRegion": {
-			"Type": "String",
-			"Description": "Name of the current region."
-		},
+    "PolymeraseStage": {
+      "Type": "String",
+      "Description": "Name of the current stage."
+    },
+    "PolymeraseRegion": {
+      "Type": "String",
+      "Description": "Name of the current region."
+    },
 
-		"PolymeraseKMSStageKey": {
-			"Type": "String",
-			"Description": "ARN for the KMS master key used to encrypt stage level configuration data."
-		},
-		"PolymeraseKMSRegionKey": {
-			"Type": "String",
-			"Description": "ARN for the KMS master key used to encrypt region level configuration data."
-		}
-	},
+    "PolymeraseKMSStageKey": {
+      "Type": "String",
+      "Description": "ARN for the KMS master key used to encrypt stage level configuration data."
+    },
+    "PolymeraseKMSRegionKey": {
+      "Type": "String",
+      "Description": "ARN for the KMS master key used to encrypt region level configuration data."
+    }
+  },
   "Resources": {
     "PolymeraseExecutionPolicy": {
       "Type": "AWS::IAM::Policy",
@@ -37,7 +37,7 @@
               "Action": [
                 "s3:GetObject"
               ],
-							"Resource": [
+              "Resource": [
                 {
                   "Fn::Join": [
                     "",
@@ -48,8 +48,8 @@
                       },
                       "/config",
                       "/",
-											{ "Ref": "PolymeraseStage" },
-											".json"
+                      { "Ref": "PolymeraseStage" },
+                      ".json"
                     ]
                   ]
                 },
@@ -62,10 +62,10 @@
                       { "Ref": "PolymeraseBucket" },
                       "/config",
                       "/",
-											{ "Ref": "PolymeraseStage" },
+                      { "Ref": "PolymeraseStage" },
                       "/",
-											{ "Ref": "PolymeraseRegion" },
-											".json"
+                      { "Ref": "PolymeraseRegion" },
+                      ".json"
                     ]
                   ]
                 }
@@ -79,9 +79,9 @@
                 "kms:GetKeyPolicy"
               ],
               "Resource": [
-								{ "Ref": "PolymeraseKMSStageKey" },
-								{ "Ref": "PolymeraseKMSRegionKey" }
-							]
+                { "Ref": "PolymeraseKMSStageKey" },
+                { "Ref": "PolymeraseKMSRegionKey" }
+              ]
             }
           ]
         },
@@ -113,7 +113,7 @@
         }
       }
     },
-		"PolymeraseAPIPolicy": {
+    "PolymeraseAPIPolicy": {
       "Type": "AWS::IAM::Policy",
       "Properties": {
         "PolicyName": "PolymeraseAPIPolicy",
