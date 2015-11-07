@@ -396,7 +396,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
                     // Wait for the command to complete
                     npmInstallCmd.on('close', function(code) {
                         if(code) {
-                            reject(code);
+                            console.log('aws-apigateway: There was a problem '
+                                + 'running npm install in the service directory');
+
+                            resolve(false);
                         } else {
                             resolve();
                         }
