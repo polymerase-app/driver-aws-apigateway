@@ -347,7 +347,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
         var gitIgnorePath = join(path, '.gitignore');
 
         try {
-            var gitIgnoreStat = statSync(gitIgnorePath);
+            statSync(gitIgnorePath);
         } catch(e) {
             var gitIgnoreTemplate = readFileSync(join(__dirname, '..',
                 'templates', '_gitignore'));
@@ -360,24 +360,17 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 
         var packageJsonPath = join(path, 'package.json');
         try {
-            var packageJsonStat = statSync(packageJsonPath);
+            statSync(packageJsonPath);
         } catch(e) {
+			var packageJsonTemplate = readFileSync(join(__dirname, '..', 'templates',
+					'package.json'));
+
+			packageJsonTemplate.name = config.name;
+			packageJsonTemplate.version = config.version;
+
             // The package.json file likely doesn't exist, so we can try and
             // create it now.
-            writeFileSync(packageJsonPath, JSON.stringify({
-                name: config.name,
-                version: config.version,
-
-                private: true,
-
-                main: 'src/polymerase.js',
-
-                dependencies: {
-                    'polymerase-lib': '^1.0.0',
-
-                    'app-module-path': '1.0.4'
-                }
-            }, null, 4), {
+            writeFileSync(packageJsonPath, JSON.stringify(packageJsonTemplate, null, 4), {
                 encoding: 'utf8',
                 flag: 'w'
             });

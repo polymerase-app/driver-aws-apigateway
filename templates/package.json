@@ -1,0 +1,14 @@
+{
+  "name": null,
+  "version": null,
+
+  "private": true,
+
+  "main": "src/polymerase.js",
+
+  "dependencies": {
+    "polymerase-lib": "^1.0.0",
+
+    "app-module-path": "1.0.4"
+  }
+}
