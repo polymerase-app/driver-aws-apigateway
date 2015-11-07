@@ -14,6 +14,8 @@ import {pascalCase} from 'change-case';
 import {AES, HmacSHA256, enc as Encoding} from 'crypto-js';
 import extend from 'extend';
 import {sync as mkpath} from 'mkpath';
+import moment from 'moment';
+import {render as mustache} from 'mustache';
 import {dependencies} from 'needlepoint';
 import {v4 as uuid} from 'node-uuid';
 
@@ -549,7 +551,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			return false;
 		} catch(e) {}
 
-		// Finally, populate it with the default JSON options for the method
+		// Populate it with the default JSON options for the method
 		var polymeraseRouteJsonTemplate = JSON.parse(readFileSync(join(__dirname, '..', 'templates',
 				'routes', 'polymerase-route.json')));
 
@@ -576,6 +578,26 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 					flag: 'w'
 				}
 		);
+
+		// Write the template JS file for the entry-point of the route handler.
+		var handlerTemplate = readFileSync(join(__dirname, '..', 'templates', 'routes', 'index.js'),
+				{
+					encoding: 'utf8'
+				}
+		);
+
+		var handlerContents = mustache(handlerTemplate, {
+			year: moment().format('YYYY'),
+			service: this.context,
+
+			method: options.method,
+			path: path
+		});
+
+		writeFileSync(join(methodPath, 'index.js'), handlerContents, {
+			encoding: 'utf8',
+			flag: 'w'
+		});
 
 		return true;
 	}

@@ -29,6 +29,8 @@
     "crypto-js": "^3.1.5",
     "extend": "^3.0.0",
     "mkpath": "^0.1.0",
+    "moment": "^2.10.6",
+    "mustache": "^2.2.0",
     "needlepoint": "^1.0.2",
     "node-uuid": "^1.4.3",
     "polymerase-driver-base": "^1.0.0"
