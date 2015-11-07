@@ -570,7 +570,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		}
 
 		// Now, write the configuration to the new route folder
-		writeFileSync(join(methodPath, 'polymerase.json'),
+		writeFileSync(join(methodPath, 'polymerase-route.json'),
 				JSON.stringify(polymeraseRouteJsonTemplate, null, 4), {
 					encoding: 'utf8',
 					flag: 'w'
