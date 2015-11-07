@@ -3,7 +3,9 @@
   "Resources": {
     "PolymeraseBucket": {
       "Type": "AWS::S3::Bucket",
-      "Properties": {}
+      "Properties": {
+        "VersioningConfiguration": { "Status": "Enabled" }
+	  }
     }
   },
 	"Outputs": {
