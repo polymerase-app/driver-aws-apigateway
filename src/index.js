@@ -862,6 +862,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 					if(err) {
 						reject(err);
 					} else {
+						if(data.Contents.length < 1) {
+							return resolve();
+						}
+
 						// Delete the specified keys
 						var promise = new Promise((resolve, reject) => {
 							console.log('aws-apigateway: Deleting ' + data.Contents.length
