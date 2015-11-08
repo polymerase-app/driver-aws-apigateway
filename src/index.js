@@ -514,24 +514,23 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 							});
 					})
 					.map((region) => {
-						var resourceKey = pascalCase([this.context.id, stage, region.region,
-							'resources'].join('-')).replace(/_/g, '');
+						var resourceKey = this.getResourceStackArn(stage, region.region);
 
-							stackTemplate.Resources[resourceKey] = {
-								Type: 'AWS::CloudFormation::Stack',
-								Properties: {
-									TemplateURL: 'https://s3.amazonaws.com/' + bucketName
-										+ '/templates/stage-region-resources.json',
+						stackTemplate.Resources[resourceKey] = {
+							Type: 'AWS::CloudFormation::Stack',
+							Properties: {
+								TemplateURL: 'https://s3.amazonaws.com/' + bucketName
+									+ '/templates/stage-region-resources.json',
 
-									Parameters: {
-										PolymeraseBucket: bucketName,
-										PolymeraseStage: stage,
-										PolymeraseRegion: region.region,
-										PolymeraseKMSStageKey: stageKey.KeyMetadata.Arn,
-										PolymeraseKMSRegionKey: region.key.KeyMetadata.Arn,
-									}
+								Parameters: {
+									PolymeraseBucket: bucketName,
+									PolymeraseStage: stage,
+									PolymeraseRegion: region.region,
+									PolymeraseKMSStageKey: stageKey.KeyMetadata.Arn,
+									PolymeraseKMSRegionKey: region.key.KeyMetadata.Arn,
 								}
-							};
+							}
+						};
 					})
 					.then(() => {
 						return Promise.all([
@@ -576,8 +575,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 							});
 					})
 					.map((region) => {
-						var resourceKey = pascalCase([this.context.id, stage, region,
-							'resources'].join('-')).replace(/_/g, '');
+						var resourceKey = this.getResourceStackArn(stage, region);
 
 						delete stackTemplate.Resources[resourceKey];
 					})
