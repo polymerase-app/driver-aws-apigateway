@@ -175,9 +175,23 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @param  {object} template
 	 */
 	updateStackTemplate(id, template) {
+		var params = [];
+
+		if(typeof template.Parameters == 'object' && !template.Parameters.length) {
+			params = Object.keys(template.Parameters);
+			params = params.map(function(param) {
+				return {
+					ParameterKey: param,
+					UsePreviousValue: true
+				};
+			});
+		}
+
 		return new Promise((resolve, reject) => {
 			this.aws.cloudFormation.updateStack({
 				StackName: id,
+				Capabilities: ['CAPABILITY_IAM'],
+				Parameters: params,
 				TemplateBody: JSON.stringify(template, null, 4)
 			}, function(err, data) {
 				if(err) {
