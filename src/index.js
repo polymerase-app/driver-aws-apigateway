@@ -379,28 +379,42 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
             });
         }
 
+		var polymeraseJsPath = join(path, 'index.js');
+		try {
+			statSync(polymeraseJsPath);
+		} catch(e) {
+			var polymeraseJsTemplate = readFileSync(join(__dirname, '..', 'templates',
+					'polymerase.js'));
+
+			var polymeraseJsContents = mustache(polymeraseJsTemplate, {
+				year: moment().format('YYYY'),
+				service: this.context
+			});
+
+			writeFileSync(packageJsonPath, polymeraseJsContents, {
+				encoding: 'utf8',
+				flag: 'w'
+			});
+		}
+
         // Run NPM install
         console.log('aws-apigateway: Installing required NPM modules');
 
         return Promise.resolve()
             .then(() => {
-                return new Promise((resolve, reject) => {
-                    var npmInstallCmd = spawn('npm install', [], {
-                        cwd: path
-                    });
+				return new Promise((resolve, reject) => {
+					exec('npm install', {
+						cwd: folder
+					}, function(err, stdout, stderr) {
+						if(err) {
+							console.log('aws-apigateway: The npm install command failed')
 
-                    // Wait for the command to complete
-                    npmInstallCmd.on('close', function(code) {
-                        if(code) {
-                            console.log('aws-apigateway: There was a problem '
-                                + 'running npm install in the service directory');
-
-                            resolve(false);
-                        } else {
-                            resolve();
-                        }
-                    });
-                });
+							resolve(false);
+						} else {
+							resolve();
+						}
+					});
+				});
             })
             .then(() => {
                 // Add the marker to indicate the service was initialized on

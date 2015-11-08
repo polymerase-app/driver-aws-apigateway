@@ -4,7 +4,7 @@
 
   "private": true,
 
-  "main": "src/polymerase.js",
+  "main": "index.js",
 
   "dependencies": {
     "polymerase-lib": "^1.0.0",
