@@ -4,8 +4,8 @@
 */
 
 import {exec, spawn} from 'child_process';
-import {createCipher} from 'crypto';
-import {readFileSync, statSync, writeFileSync} from 'fs';
+import {createCipher, createHash} from 'crypto';
+import {readdirSync, readFileSync, statSync, writeFileSync} from 'fs';
 import {tmpdir} from 'os';
 import {join, sep as pathSeparator} from 'path';
 
@@ -25,6 +25,10 @@ import BaseDriver from 'polymerase-driver-base';
 
 // Constant used for the "all" region
 const ALL_REGIONS = 'all';
+
+// Constant used as the default region, which is the region in which the service-level resources
+// (such as the S3 bucket) are created.
+const DEFAULT_REGION = 'us-east-1';
 
 export default class AWSAPIGatewayDriver extends BaseDriver {
 	/**
@@ -54,6 +58,8 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	setServiceContext(serviceContext) {
 		super.setServiceContext(serviceContext);
 
+		this.aws.cloudFormation = {};
+
 		// Create all of the permutations
 		this.context.regions.forEach((region) => {
 			this.context.stages.forEach((stage) => {
@@ -62,9 +68,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 					stage: stage
 				});
 			});
+
+			this.aws.cloudFormation[region] = new CloudFormation({ region: region });
 		});
 
-		this.aws.cloudFormation = new CloudFormation({ region: 'us-east-1' });
 		this.aws.iam = new IAM({ region: 'us-east-1' });
 		this.aws.kms = new KMS({ region: 'us-east-1' });
 		this.aws.s3 = new S3({ region: 'us-east-1' });
@@ -120,9 +127,9 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Get the template for the specified stack name or ID
 	 * @param  {string} id
 	 */
-	getStackTemplate(id) {
+	getStackTemplate(id, region) {
 		return new Promise((resolve, reject) => {
-			this.aws.cloudFormation.getTemplate({
+			this.aws.cloudFormation[region ? region : DEFAULT_REGION].getTemplate({
 				StackName: id
 			}, function(err, data) {
 				if(err) {
@@ -139,15 +146,16 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @param stack
 	 * @param resource
 	 */
-	getResourceArnFromStack(stack, resource) {
+	getResourceArnFromStack(stack, resource, region) {
 		return new Promise((resolve, reject) => {
-			this.aws.cloudFormation.describeStackResource({
+			this.aws.cloudFormation[region ? region : DEFAULT_REGION].describeStackResource({
 				StackName: stack,
 				LogicalResourceId: resource
 			}, function(err, result) {
 				if(err) {
 					reject(err);
 				} else {
+					console.log(result.StackResourceDetail);
 					resolve(result.StackResourceDetail.PhysicalResourceId);
 				}
 			});
@@ -155,35 +163,11 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
-	 * Get the stack ARN for the resource CloudFormation stack for the specified stage and region
-	 * @param stage
-	 * @param region
-	 */
-	getResourceStackArn(stage, region) {
-		return this.getResourceArnFromStack(this.getServiceStackName(),
-				this.getServiceResourceName(stage, region));
-	}
-
-	/**
-	 * Get an ARN for a resource from the stage-region CloudFormation sub-stack
-	 * @param stage
-	 * @param region
-	 * @param resource
-	 * @returns {Promise.<String>}
-	 */
-	getArnFromResourceStack(stage, region, resource) {
-		return this.getResourceStackArn(stage, region)
-			.then((arn) => {
-				return this.getResourceArnFromStack(arn, resource);
-			});
-	}
-
-	/**
 	 * Update the stack template for the given CloudFormation stack
 	 * @param  {string} id
 	 * @param  {object} template
 	 */
-	updateStackTemplate(id, template) {
+	updateStackTemplate(id, template, region) {
 		var params = [];
 
 		if(typeof template.Parameters == 'object' && !template.Parameters.length) {
@@ -197,7 +181,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		}
 
 		return new Promise((resolve, reject) => {
-			this.aws.cloudFormation.updateStack({
+			this.aws.cloudFormation[region ? region : DEFAULT_REGION].updateStack({
 				StackName: id,
 				Capabilities: ['CAPABILITY_IAM'],
 				Parameters: params,
@@ -216,7 +200,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Wait for the stack with the specified ID to be ready
 	 * @param  {String} id
 	 */
-	waitForStackReady(id, noReuse) {
+	waitForStackReady(id, noReuse, region) {
 		if(this._stackWait.hasOwnProperty(id) && noReuse !== true) {
 			return this._stackWait[id];
 		}
@@ -224,7 +208,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		var promise = new Promise((resolve, reject) => {
 			console.log('aws-apigateway: Waiting for CloudFormation...');
 
-			this.aws.cloudFormation.describeStacks({
+			this.aws.cloudFormation[region ? region : DEFAULT_REGION].describeStacks({
 				StackName: id
 			}, (err, data) => {
 				if(err) {
@@ -243,6 +227,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 							delete this._stackWait[id];
 
 							return resolve(stack);
+						case 'DELETE_FAILED':
+							delete this._stackWait[id];
+
+							reject(stack.StackStatus);
 					}
 
 					setTimeout(() => {
@@ -276,7 +264,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				'cloud-formation', 'resources.json'), 'utf8');
 
 			return new Promise((resolve, reject) => {
-				this.aws.cloudFormation.createStack({
+				this.aws.cloudFormation[DEFAULT_REGION].createStack({
 					StackName: this.getServiceStackName(),
 					Capabilities: [
 						'CAPABILITY_IAM'
@@ -306,22 +294,6 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				'cloud-formation', 'stage-region-resources.json'));
 
 			return Promise.all([
-				stack,
-
-				bucketName,
-
-				new Promise((resolve, reject) => {
-					this.aws.cloudFormation.getTemplate({
-						StackName: stack.StackName
-					}, function(err, data) {
-						if(err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					});
-				}),
-
 				new Promise((resolve, reject) => {
 					this.aws.s3.putObject({
 						Bucket: bucketName,
@@ -337,17 +309,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				})
 			]);
 		})
-		.spread((stack, bucketName, stackTemplate, resourceTemplate) => {
-			stackTemplate = JSON.parse(stackTemplate.TemplateBody);
-
+		.then(() => {
 			return Promise.all(
 				this.context.stages.map((stage) => this.createStage(stage))
 			);
-		})
-		.then((stack) => {
-			// Wait for the stack to finish being updated with the new stage
-			// sub-stacks
-			return this.waitForStackReady(stack.StackId);
 		})
 		.catch((err) => {
 			console.error('aws-apigateway: Something went wrong. Cleaning up.');
@@ -376,13 +341,10 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				return this.emptyServiceBucket();
 			})
 			.then(() => {
-				return this.waitForStackReady(this.getServiceStackName());
-			})
-			.then(() => {
 				console.log('aws-apigateway: Deleting all CloudFormation stacks');
 
 				return new Promise((resolve, reject) => {
-					this.aws.cloudFormation.deleteStack({
+					this.aws.cloudFormation[DEFAULT_REGION].deleteStack({
 						StackName: this.getServiceStackName()
 					}, function(err, data) {
 						if(err) {
@@ -512,63 +474,73 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @return {Promise}
 	 */
 	createStage(stage) {
-		return this.waitForStackReady(this.getServiceStackName())
-			.then((stack) => {
-				// We know the stack is ready to be modified, so now we can go ahead
-				// and get the current stack template to prepare it to be modified
-				return Promise.all([
-					stack,
-					this.getStackTemplate(stack.StackName),
-					this.getServiceStackOutput('BucketName'),
-					this.createKey(stage, ALL_REGIONS)
-				]);
-			})
-			.spread((stack, stackTemplate, bucketName, stageKey) => {
-				// Modify the template to add the new resources (i.e. the sub stack
-				// definitions)
-				return Promise.resolve(this.context.regions)
-					.map((region) => {
-						return this.createKey(stage, region)
-							.then((regionKey) => {
-								return {
-									region: region,
-									key: regionKey
-								};
-							});
-					})
-					.map((region) => {
-						var resourceKey = this.getResourceStackArn(stage, region.region);
+		return Promise.all([
+			this.getServiceStackOutput('BucketName'),
+			this.createKey(stage, ALL_REGIONS)
+		])
+		.spread((bucketName, stageKey) => {
+			// Modify the template to add the new resources (i.e. the sub stack
+			// definitions)
+			return Promise.resolve(this.context.regions)
+				.map((region) => {
+					return this.createKey(stage, region)
+						.then((regionKey) => {
+							return {
+								region: region,
+								key: regionKey
+							};
+						});
+				})
+				.map((region) => {
+					var resourceTemplateUrl = 'https://s3.amazonaws.com/' + bucketName
+							+ '/templates/stage-region-resources.json';
 
-						stackTemplate.Resources[resourceKey] = {
-							Type: 'AWS::CloudFormation::Stack',
-							Properties: {
-								TemplateURL: 'https://s3.amazonaws.com/' + bucketName
-									+ '/templates/stage-region-resources.json',
+					return new Promise((resolve, reject) => {
+						console.log('aws-apigateway: Creating stack for ' + region.region);
 
-								Parameters: {
-									PolymeraseBucket: bucketName,
-									PolymeraseStage: stage,
-									PolymeraseRegion: region.region,
-									PolymeraseKMSStageKey: stageKey.KeyMetadata.Arn,
-									PolymeraseKMSRegionKey: region.key.KeyMetadata.Arn,
+						this.aws.cloudFormation[region.region].createStack({
+							StackName: this.getRegionStackName(region.region),
+							Capabilities: [
+								'CAPABILITY_IAM'
+							],
+							OnFailure: 'DELETE',
+							TemplateURL: resourceTemplateUrl,
+							Parameters: [
+								{
+									ParameterKey: 'PolymeraseBucket',
+									ParameterValue: bucketName
+								},
+
+								{
+									ParameterKey: 'PolymeraseStage',
+									ParameterValue: stage
+								},
+
+								{
+									ParameterKey: 'PolymeraseRegion',
+									ParameterValue: region.region
+								},
+
+								{
+									ParameterKey: 'PolymeraseKMSStageKey',
+									ParameterValue: stageKey.KeyMetadata.Arn
+								},
+
+								{
+									ParameterKey: 'PolymeraseKMSRegionKey',
+									ParameterValue: region.key.KeyMetadata.Arn
 								}
+							]
+						}, function(err, data) {
+							if(err) {
+								reject(err);
+							} else {
+								resolve(data);
 							}
-						};
-					})
-					.then(() => {
-						return Promise.all([
-							stack,
-							stackTemplate
-						]);
+						});
 					});
-			})
-			.spread((stack, stackTemplate) => {
-				// Update the stack template
-				return this.updateStackTemplate(stack.StackId, stackTemplate);
-			})
-			.then((stack) => {
-				return this.waitForStackReady(stack.StackId);
-			});
+				});
+		});
 	}
 
 	/**
@@ -576,45 +548,28 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * @param  {string} stage
 	 */
 	deleteStage(stage) {
-		return this.waitForStackReady(this.getServiceStackName())
-			.then((stack) => {
-				// We know the stack is ready to be modified, so now we can go ahead
-				// and get the current stack template to prepare it to be modified
-				return Promise.all([
-					stack,
-					this.getStackTemplate(stack.StackName),
-					this.getServiceStackOutput('BucketName'),
-					this.deleteKey(stage, ALL_REGIONS)
-				]);
-			})
-			.spread((stack, stackTemplate, bucketName, stageKey) => {
-				// Modify the template to remove the resources (i.e. the sub stack
-				// definitions)
+		return this.deleteKey(stage, ALL_REGIONS)
+			.then(() => {
 				return Promise.resolve(this.context.regions)
-					.map((region) => {
-						return this.deleteKey(stage, region)
-							.then(() => {
-								return region;
-							});
-					})
-					.map((region) => {
-						var resourceKey = this.getResourceStackArn(stage, region);
-
-						delete stackTemplate.Resources[resourceKey];
-					})
-					.then(() => {
-						return Promise.all([
-							stack,
-							stackTemplate
-						]);
+			})
+			.map((region) => {
+				return this.deleteKey(stage, region)
+						.then(() => {
+							return region;
+						});
+			})
+			.map((region) => {
+				return new Promise((resolve, reject) => {
+					this.aws.cloudFormation[region].deleteStack({
+						StackName: this.getRegionStackName(region)
+					}, function(err, result) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve(result);
+						}
 					});
-			})
-			.spread((stack, stackTemplate) => {
-				// Update the stack template
-				return this.updateStackTemplate(stack.StackId, stackTemplate);
-			})
-			.then((stack) => {
-				return this.waitForStackReady(stack.StackId);
+				});
 			});
 	}
 
@@ -695,7 +650,109 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
+	 * Deploy the route at the specified path to the given stage
+	 * @param folder
+	 * @param path
+	 * @param stage
+	 */
+	deployRoute(folder, path, stage) {
+		var file;
 
+		return this.packageRoute(folder, path)
+			.then((zip) => {
+				return this.uploadRoute(path, zip);
+			})
+			.then((uploadedFile) => {
+				file = uploadedFile;
+
+				console.log('aws-apigateway: Updating CloudFormation stack to deploy Lambda'
+						+ ' function.');
+
+				var routePath = this.getRouteFolderForPath(path);
+
+				// Look for all of the methods for the specified route path
+				var routeMethods = readdirSync(join(folder, 'src', 'routes', routePath))
+						.filter((routeMethod) => {
+							return routeMethod.match(/^_{2}[a-z]{3,8}$/) != null;
+						});
+
+				return routeMethods.map((routeMethod) => {
+					return {
+						path: join(routePath, routeMethod),
+						method: routeMethod.replace(/^_{2}/, '')
+					}
+				});
+			})
+			.map((route) => {
+				var routePath = route.path;
+				var routeMethod = route.method.toUpperCase();
+
+				console.log('aws-apigateway: Updating definition for ' + routeMethod + ' handler');
+
+				// Get the configuration so that we know what parameters to send to Lambda
+				var routeConfig = JSON.parse(readFileSync(join(folder, 'src', 'routes', routePath,
+						'polymerase-route.json'),
+						{
+							encoding: 'utf8'
+						}
+				));
+
+				var lambdaParams = extend({
+					memory: 256,
+					timeout: 3
+				}, routeConfig.parameters['aws-apigateway'].resources);
+
+				var routePathHash = createHash('md5').update(routePath).digest('hex');
+				var resourceName = pascalCase(['polymerase', routePathHash].join('-'));
+
+				var resourceValue = {
+					"Type": "AWS::Lambda::Function",
+					"Properties": {
+						"Code": {
+							"S3Bucket": file.Bucket,
+							"S3Key": file.Key,
+							"S3ObjectVersion": file.VersionId
+						},
+
+						"Description": "Route handler for " + routeMethod + " " + path,
+						"Handler": "handler",
+						"MemorySize": lambdaParams.memory,
+						"Timeout": lambdaParams.timeout,
+						"Role": { "Fn::GetAtt": ["PolymeraseExecutionRole", "Arn"] },
+						"Runtime": "nodejs"
+					}
+				};
+
+				return Promise.resolve(this.context.regions)
+					.map((region) => {
+						return this.getStackTemplate(this.getRegionStackName(region), region)
+							.then((stackTemplate) => {
+								stackTemplate.Resources[resourceName] = resourceValue;
+
+								return stackTemplate;
+							})
+							.then((stackTemplate) => {
+								return this.updateStackTemplate(this.getRegionStackName(region),
+										stackTemplate, region);
+							})
+							.then(() => {
+								return this.waitForStackReady(this.getRegionStackName(region),
+										false, region);
+							})
+							.then((stack) => {
+								return this.getResourceArnFromStack(stack.StackName, resourceName,
+										region);
+							})
+							.then((lambdaArn) => {
+								// The Lambda is finished being created, so we now need to
+								// add/update the API gateway endpoint
+								console.log(lambdaArn);
+							});
+					});
+			});
+	}
+
+	/**
 	 * Package the code for the route. The promise returned resolves to a buffer containing the
 	 * contents of the ZIP that houses the route.
 	 * @param folder
@@ -754,6 +811,8 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				var routePath = this.getRouteFolderForPath(path);
 				var key = 'packages/routes/' + routePath + '.zip';
 
+				console.log('aws-apigateway: Uploading package to S3');
+
 				return new Promise((resolve, reject) => {
 					this.aws.s3.putObject({
 						Bucket: bucket,
@@ -792,6 +851,8 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	 * Empty the bucket for the current service
 	 */
 	emptyServiceBucket() {
+		// TODO: Delete all versions of the objects
+
 		var listAndDelete = function(bucketName) {
 			return new Promise((resolve, reject) => {
 				this.aws.s3.listObjects({
