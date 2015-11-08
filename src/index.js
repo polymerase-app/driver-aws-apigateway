@@ -426,14 +426,14 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			statSync(polymeraseJsPath);
 		} catch(e) {
 			var polymeraseJsTemplate = readFileSync(join(__dirname, '..', 'templates',
-					'polymerase.js'));
+					'polymerase.js'), { encoding: 'utf8' });
 
 			var polymeraseJsContents = mustache(polymeraseJsTemplate, {
 				year: moment().format('YYYY'),
 				service: this.context
 			});
 
-			writeFileSync(packageJsonPath, polymeraseJsContents, {
+			writeFileSync(polymeraseJsPath, polymeraseJsContents, {
 				encoding: 'utf8',
 				flag: 'w'
 			});
@@ -446,7 +446,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
             .then(() => {
 				return new Promise((resolve, reject) => {
 					exec('npm install', {
-						cwd: folder
+						cwd: path
 					}, function(err, stdout, stderr) {
 						if(err) {
 							console.log('aws-apigateway: The npm install command failed')
