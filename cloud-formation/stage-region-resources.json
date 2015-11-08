@@ -168,5 +168,16 @@
         }
       }
     }
+  },
+  "Outputs": {
+    "LambdaExecutionRole": {
+      "Description": "ARN of the IAM role used for Lambda function execution",
+      "Value": { "Fn::GetAtt": ["PolymeraseExecutionRole", "Arn"] }
+    },
+
+    "LambdaAPIRole": {
+      "Description": "ARN of the IAM role used for API Gateway",
+      "Value": { "Fn::GetAtt": ["PolymeraseAPIRole", "Arn"] }
+    }
   }
 }
