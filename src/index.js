@@ -10,7 +10,7 @@ import {tmpdir} from 'os';
 import {join, sep as pathSeparator} from 'path';
 
 import AdmZip from 'adm-zip';
-import {CloudFormation, IAM, KMS, S3} from 'aws-sdk';
+import {APIGateway, CloudFormation, IAM, KMS, S3} from 'aws-sdk';
 import Promise from 'bluebird';
 import {pascalCase} from 'change-case';
 import {AES, HmacSHA256, enc as Encoding} from 'crypto-js';
@@ -59,6 +59,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 		super.setServiceContext(serviceContext);
 
 		this.aws.cloudFormation = {};
+		this.aws.apiGateway = {};
 
 		// Create all of the permutations
 		this.context.regions.forEach((region) => {
@@ -70,6 +71,7 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 			});
 
 			this.aws.cloudFormation[region] = new CloudFormation({ region: region });
+			this.aws.apiGateway[region] = new APIGateway({ region: region, apiVersion: '2015-07-09' });
 		});
 
 		this.aws.iam = new IAM({ region: 'us-east-1' });
