@@ -316,6 +316,23 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 				this.context.stages.map((stage) => this.createStage(stage))
 			);
 		})
+		.then(() => {
+			return this.context.regions;
+		})
+		.map((region) => {
+			return new Promise((resolve, reject) => {
+				this.aws.apiGateway[region].createRestApi({
+					name: pascalCase(this.context.name + ' ' + region),
+					description: this.context.name + ' API for the ' + region + ' region'
+				}, function(err, result) {
+					if(err) {
+						reject(err);
+					} else {
+						resolve(result);
+					}
+				});
+			});
+		})
 		.catch((err) => {
 			console.error('aws-apigateway: Something went wrong. Cleaning up.');
 			console.log(err.stack);
