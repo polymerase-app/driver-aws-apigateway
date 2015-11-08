@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/polymerase-app/driver-aws-apigateway#readme",
   "dependencies": {
+    "adm-zip": "^0.4.7",
     "aws-sdk": "^2.2.10",
     "bluebird": "^2.10.2",
     "change-case": "^2.3.0",

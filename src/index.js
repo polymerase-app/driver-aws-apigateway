@@ -3,11 +3,13 @@
 * @copyright 2015 Andrew Munsell <andrew@wizardapps.net>
 */
 
-import {spawn} from 'child_process';
+import {exec, spawn} from 'child_process';
 import {createCipher} from 'crypto';
 import {readFileSync, statSync, writeFileSync} from 'fs';
+import {tmpdir} from 'os';
 import {join, sep as pathSeparator} from 'path';
 
+import AdmZip from 'adm-zip';
 import {CloudFormation, IAM, KMS, S3} from 'aws-sdk';
 import Promise from 'bluebird';
 import {pascalCase} from 'change-case';
@@ -617,11 +619,93 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
+
+	 * Package the code for the route. The promise returned resolves to a buffer containing the
+	 * contents of the ZIP that houses the route.
+	 * @param folder
+	 * @param path
+	 */
+	packageRoute(folder, path) {
+		return Promise.resolve()
+			.then(() => {
+				console.log('aws-apigateway: Ensuring NPM dependencies have been installed');
+
+				return new Promise((resolve, reject) => {
+					exec('npm install', {
+						cwd: folder
+					}, function(err, stdout, stderr) {
+						if(err) {
+							reject(err);
+						} else {
+							resolve();
+						}
+					});
+				});
+			})
+			.then(() => {
+				console.log('aws-apigateway: Packaging route');
+
+				var routePath = this.getRouteFolderForPath(path);
+				var routeFolder = join(folder, 'src/routes', routePath);
+
+				var zip = new AdmZip();
+
+				zip.addLocalFolder(join(folder, 'node_modules'), 'node_modules');
+
+				zip.addLocalFile(join(folder, 'index.js'), '.');
+				zip.addLocalFolder(join(folder, 'src', 'lib'), 'src/lib');
+				zip.addLocalFolder(routeFolder, 'src/routes/' + routePath);
+
+				return new Promise((resolve, reject) => {
+					zip.toBuffer(function(buff) {
+						resolve(buff);
+					}, function(err) {
+						reject(err);
+					})
+				});
+			});
+	}
+
+	/**
+	 * Upload the code for the route to S3. The promise returned resolves to the S3 bucket, URL,
+	 * and version for the uploaded ZIP file.
+	 * @param path
+	 * @param zip Buffer containing the contents of the ZIP
+	 */
+	uploadRoute(path, zip) {
+		return this.getServiceStackOutput('BucketName')
+			.then((bucket) => {
+				var routePath = this.getRouteFolderForPath(path);
+				var key = 'packages/routes/' + routePath + '.zip';
+
+				return new Promise((resolve, reject) => {
+					this.aws.s3.putObject({
+						Bucket: bucket,
+						Key: key,
+						Body: zip,
+						ContentType: 'application/zip',
+						ServerSideEncryption: 'AES256'
+					}, function(err, result) {
+						if(err) {
+							reject(err);
+						} else {
+							result.Bucket = bucket;
+							result.Key = key;
+
+							resolve(result);
+						}
+					})
+				});
+			});
+	}
+
+	/**
 	 * Get the folder name for the specified API path
 	 * @param path
 	 */
 	getRouteFolderForPath(path) {
 		path = path.replace(/^\//, '');
+		path = path.replace(/\/$/, '');
 		path = path.replace(/\{([a-z\d\-\_]+)\}/ig, '_$1_');
 		path = path.split('/');
 
