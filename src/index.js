@@ -79,6 +79,17 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
+	 * Get the resource ID for the substack used for stage-region resource creation.
+	 * @param stage
+	 * @param region
+	 * @returns {string}
+	 */
+	getServiceResourceName(stage, region) {
+		return pascalCase([this.context.id, stage, region, 'resources'].join('-'))
+				.replace(/_/g, '');
+	}
+
+	/**
 	 * Get an output for the service stack with the following key
 	 * @param  {string} key
 	 */
