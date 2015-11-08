@@ -79,6 +79,15 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
+	 * Get the name of the stack for the specified region.
+	 * @param region
+	 * @returns {string}
+	 */
+	getRegionStackName(region) {
+		return ['polymerase', this.context.name, this.context.id, region].join('-');
+	}
+
+	/**
 	 * Get the resource ID for the substack used for stage-region resource creation.
 	 * @param stage
 	 * @param region
