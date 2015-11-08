@@ -126,6 +126,50 @@ export default class AWSAPIGatewayDriver extends BaseDriver {
 	}
 
 	/**
+	 * Get the ARN of a resource from the specified stack
+	 * @param stack
+	 * @param resource
+	 */
+	getResourceArnFromStack(stack, resource) {
+		return new Promise((resolve, reject) => {
+			this.aws.cloudFormation.describeStackResource({
+				StackName: stack,
+				LogicalResourceId: resource
+			}, function(err, result) {
+				if(err) {
+					reject(err);
+				} else {
+					resolve(result.StackResourceDetail.PhysicalResourceId);
+				}
+			});
+		});
+	}
+
+	/**
+	 * Get the stack ARN for the resource CloudFormation stack for the specified stage and region
+	 * @param stage
+	 * @param region
+	 */
+	getResourceStackArn(stage, region) {
+		return this.getResourceArnFromStack(this.getServiceStackName(),
+				this.getServiceResourceName(stage, region));
+	}
+
+	/**
+	 * Get an ARN for a resource from the stage-region CloudFormation sub-stack
+	 * @param stage
+	 * @param region
+	 * @param resource
+	 * @returns {Promise.<String>}
+	 */
+	getArnFromResourceStack(stage, region, resource) {
+		return this.getResourceStackArn(stage, region)
+			.then((arn) => {
+				return this.getResourceArnFromStack(arn, resource);
+			});
+	}
+
+	/**
 	 * Update the stack template for the given CloudFormation stack
 	 * @param  {string} id
 	 * @param  {object} template
